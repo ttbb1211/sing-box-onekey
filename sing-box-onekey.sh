@@ -13,9 +13,9 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-CONF_DIR="/etc/sing-box"
+CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
-BIN="/usr/local/bin/sing-box"
+BIN="/usr/local/bin/sb-onekey"
 VLESS_PORT="${VLESS_PORT:-}"
 HY2_PORT="${HY2_PORT:-}"
 SNI="${SNI:-}"
@@ -157,7 +157,7 @@ load_params() {
 
 # ---------- hy2 自签证书(换证书前必须先停服务) ----------
 gen_cert() {
-    rc-service sing-box stop >/dev/null 2>&1 || systemctl stop sing-box 2>/dev/null || true
+    rc-service sb-onekey stop >/dev/null 2>&1 || systemctl stop sb-onekey 2>/dev/null || true
     openssl req -x509 -newkey rsa:2048 \
         -keyout "$CONF_DIR/hy2.key" -out "$CONF_DIR/hy2.crt" \
         -days 3650 -nodes \
@@ -227,23 +227,23 @@ write_config() {
 # ---------- 服务管理 ----------
 svc_install() {
     if [ "$INIT" = "openrc" ]; then
-        cat > /etc/init.d/sing-box <<'EOF'
+        cat > /etc/init.d/sb-onekey <<'EOF'
 #!/sbin/openrc-run
 name="sing-box"
-description="sing-box node (vless-reality + hysteria2)"
+description="sb-onekey node (vless-reality + hysteria2)"
 command="/usr/local/bin/sing-box"
 command_args="run -c /etc/sing-box/config.json"
 command_background="yes"
-pidfile="/run/sing-box.pid"
-output_log="/var/log/sing-box.log"
-error_log="/var/log/sing-box.log"
+pidfile="/run/sb-onekey.pid"
+output_log="/var/log/sb-onekey.log"
+error_log="/var/log/sb-onekey.log"
 depend() { need net; }
 EOF
-        chmod +x /etc/init.d/sing-box
-        rc-update add sing-box default 2>/dev/null || true
-        rc-service sing-box restart
+        chmod +x /etc/init.d/sb-onekey
+        rc-update add sb-onekey default 2>/dev/null || true
+        rc-service sb-onekey restart
     else
-        cat > /etc/systemd/system/sing-box.service <<'EOF'
+        cat > /etc/systemd/system/sb-onekey.service <<'EOF'
 [Unit]
 After=network.target
 [Service]
@@ -253,8 +253,8 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
-        systemctl enable sing-box >/dev/null
-        systemctl restart sing-box
+        systemctl enable sb-onekey >/dev/null
+        systemctl restart sb-onekey
     fi
     sleep 1
     svc_status || die "服务启动失败,查看日志: tail -30 /var/log/sing-box.log 或 journalctl -u sing-box"
@@ -262,9 +262,9 @@ EOF
 
 svc_status() {
     if [ "$INIT" = "openrc" ]; then
-        rc-service sing-box status >/dev/null 2>&1
+        rc-service sb-onekey status >/dev/null 2>&1
     else
-        systemctl is-active sing-box >/dev/null 2>&1
+        systemctl is-active sb-onekey >/dev/null 2>&1
     fi
 }
 
@@ -290,14 +290,31 @@ show_links() {
     printf "${CYN}==============================${NC}\n"
 }
 
+port_busy() {  # $1=端口
+    (netstat -tuln 2>/dev/null || ss -tuln 2>/dev/null) | grep -q "[:.]$1[^0-9]"
+}
+
+detect_existing() {
+    # fscarmen 版 sing-box:二进制在 /etc/sing-box/、配置在 /etc/sing-box/conf
+    if [ -x /etc/sing-box/sing-box ] || [ -d /etc/sing-box/conf ]; then
+        warn "检测到 fscarmen 版 sing-box,本脚本与其完全隔离(服务名 sb-onekey,目录 /etc/sb-onekey),可共存"
+    fi
+    if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q "^sing-box"; then
+        warn "检测到系统里已有 sing-box 服务,本脚本将以独立服务名 sb-onekey 运行,互不干扰"
+    fi
+}
+
 do_install() {
     [ -f "$PARAMS" ] && die "已安装过(参数在 $PARAMS)。查看链接: sh $0 info ;重装请先: sh $0 uninstall"
     detect_os
+    detect_existing
     install_deps
     install_singbox
     ask_port  VLESS_PORT "$(printf 'vless-reality 端口(必填,1-65535): ')"
     ask_port  HY2_PORT   "$(printf 'hysteria2 端口   (必填,1-65535): ')"
     [ "$VLESS_PORT" != "$HY2_PORT" ] || die "两个端口不能相同"
+    port_busy "$VLESS_PORT" && die "TCP 端口 $VLESS_PORT 已被占用(可能是已有节点),换一个"
+    port_busy "$HY2_PORT"   && die "UDP 端口 $HY2_PORT 已被占用(可能是已有节点),换一个"
     ask_text SNI      "$(printf 'SNI 域名(回车默认 www.icloud.com): ')" "www.icloud.com"
     ask_text NODE_NAME "$(printf '节点名称(回车默认用主机名: '$(hostname)') : ')" "$(hostname)"
     info "预检 SNI: https://$SNI"
@@ -326,13 +343,13 @@ do_info() {
 do_uninstall() {
     detect_os
     if [ "$INIT" = "openrc" ]; then
-        rc-service sing-box stop >/dev/null 2>&1 || true
-        rc-update del sing-box default >/dev/null 2>&1 || true
-        rm -f /etc/init.d/sing-box
+        rc-service sb-onekey stop >/dev/null 2>&1 || true
+        rc-update del sb-onekey default >/dev/null 2>&1 || true
+        rm -f /etc/init.d/sb-onekey
     else
-        systemctl stop sing-box 2>/dev/null || true
-        systemctl disable sing-box >/dev/null 2>&1 || true
-        rm -f /etc/systemd/system/sing-box.service
+        systemctl stop sb-onekey 2>/dev/null || true
+        systemctl disable sb-onekey >/dev/null 2>&1 || true
+        rm -f /etc/systemd/system/sb-onekey.service
         systemctl daemon-reload
     fi
     rm -rf "$CONF_DIR" "$BIN" /var/log/sing-box.log

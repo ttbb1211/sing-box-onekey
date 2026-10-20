@@ -51,11 +51,11 @@ SB_VERSION=1.12.14 sh sing-box-onekey.sh
 
 | 路径 | 内容 |
 |---|---|
-| `/usr/local/bin/sing-box` | sing-box 二进制（GitHub Releases 原版） |
-| `/etc/sing-box/config.json` | 配置（vless-reality + hysteria2 双入站） |
-| `/etc/sing-box/params.env` | 全部生成参数（权限 600，`info` 命令读它） |
-| `/etc/sing-box/hy2.crt` `.key` | hysteria2 自签证书（10 年，CN=SNI 域名） |
-| OpenRC `/etc/init.d/sing-box` 或 systemd `sing-box.service` | 服务，开机自启 |
+| `/usr/local/bin/sb-onekey` | sing-box 二进制副本（GitHub Releases 原版） |
+| `/etc/sb-onekey/config.json` | 配置（vless-reality + hysteria2 双入站） |
+| `/etc/sb-onekey/params.env` | 全部生成参数（权限 600，`info` 命令读它） |
+| `/etc/sb-onekey/hy2.crt` `.key` | hysteria2 自签证书（10 年，CN=SNI 域名） |
+| OpenRC `/etc/init.d/sb-onekey` 或 systemd `sb-onekey.service` | 服务，开机自启（服务名独立为 sb-onekey） |
 
 ## 注意事项
 
@@ -73,3 +73,9 @@ SB_VERSION=1.12.14 sh sing-box-onekey.sh
 ```bash
 sh sing-box-onekey.sh uninstall
 ```
+
+## 与其他 sing-box 脚本共存
+
+本脚本与 fscarmen/sing-box 等第三方安装**完全隔离**：独立服务名 `sb-onekey`、独立目录 `/etc/sb-onekey`、独立二进制 `/usr/local/bin/sb-onekey`，安装/卸载都不会动第三方脚本装的东西。唯一要避开的是**端口冲突**——安装时会预检端口占用，被占用的端口会直接拒绝。
+
+节点名默认取主机名，**不自动加国旗前缀**，需要什么名字（含国旗 emoji）在安装时自己输入。
