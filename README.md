@@ -11,7 +11,9 @@
 | 特性 | 说明 |
 |---|---|
 | **协议自选** | 只装 vless、只装 hy2、或两个都装；装完还能随时启用/禁用 |
-| **装后可编辑** | `edit` 子命令改端口 / SNI / 节点名，重置 UUID / 密码 / reality 密钥，全程不用重装 |
+| **装后可编辑** | `edit` 改端口 / SNI / 节点名，重置 UUID / 密码 / reality 密钥，全程不用重装 |
+| **状态一眼看清** | `info` 直接列出已装协议、端口、**实际监听状态**、服务状态、sing-box 版本 |
+| **命令自装** | 装完把脚本自身装成 `sbctl`，以后直接 `sbctl info` / `sbctl edit`，不用再记脚本放哪 |
 | **零依赖** | Alpine 裸机直接跑，脚本自动装 curl / openssl / tar |
 | **端口必填** | 不设默认端口，避免和别人撞车 |
 | **隔离共存** | 服务名 `sb-onekey`、目录 `/etc/sb-onekey`、二进制 `/usr/local/bin/sb-onekey`，不碰任何第三方安装 |
@@ -52,13 +54,64 @@ sh sing-box-onekey.sh
 
 ## 子命令
 
+安装时会把脚本自身装成命令 **`sbctl`**（`/usr/local/bin/sbctl`），所以装完之后：
+
+```sh
+sbctl info        # 查看已装协议 / 端口 / 监听状态 / 服务状态 / 分享链接
+sbctl status      # 同 info
+sbctl edit        # 交互式编辑(推荐)
+sbctl edit SNI=www.nvidia.com VLESS_PORT=65010   # 非交互编辑
+sbctl help        # 帮助
+sbctl uninstall   # 彻底卸载(只清自己)
+```
+
+没装之前（或 `curl | sh` 中途失败）仍可用脚本原名：
+
 ```sh
 sh sing-box-onekey.sh              # 安装(默认)
-sh sing-box-onekey.sh info         # 查看当前协议、端口、分享链接
-sh sing-box-onekey.sh edit         # 交互式编辑(推荐)
-sh sing-box-onekey.sh edit SNI=www.nvidia.com VLESS_PORT=65010   # 非交互编辑
-sh sing-box-onekey.sh uninstall    # 彻底卸载(只清自己)
+sh sing-box-onekey.sh info         # 查看
+sh sing-box-onekey.sh edit         # 编辑
+sh sing-box-onekey.sh uninstall    # 卸载
 ```
+
+> ⚠️ `/usr/local/bin/sb-onekey` 是 **sing-box 二进制**，不是本脚本；脚本的入口是 `sbctl`。两者刻意分开，避免把二进制覆盖掉。
+
+---
+
+## 查看当前状态：`info`
+
+```sh
+sbctl info
+```
+
+```
+========== 当前状态 ==========
+  服务状态  : 运行中
+  sing-box  : v1.14.3
+  服务器 IP : 203.0.113.10
+  节点名称  : hk-node-1
+  SNI       : www.icloud.com
+  配置文件  : /etc/sb-onekey/config.json
+
+  已装协议  : vless-reality + hysteria2
+    vless   : 端口 65005/TCP  监听中
+    hy2     : 端口 65006/UDP  监听中
+==============================
+
+========== 分享链接 ==========
+vless://<UUID>@203.0.113.10:65005?...#hk-node-1%20reality
+
+hysteria2://<PASS>@203.0.113.10:65006?...#hk-node-1%20hy2
+==============================
+```
+
+**监听状态**是直接读内核 `/proc/net/{tcp,tcp6,udp,udp6}` 得出的，不依赖 `ss`/`netstat`（Alpine 最小安装里可能都没有）。
+
+- `监听中` = 端口真的在内核里等着连接
+- `未监听` = 服务起来了但端口没开（配置/权限问题）
+- `无法判断` = 读不到 `/proc/net/*`（极少见）
+
+> 看到「服务运行中」但端口「未监听」，说明进程活着但 inbound 没绑上，先看 `/var/log/sb-onekey.log`。
 
 ---
 
@@ -89,7 +142,7 @@ sh sing-box-onekey.sh uninstall    # 彻底卸载(只清自己)
 ## 装完再改：`edit`
 
 ```sh
-sh sing-box-onekey.sh edit
+sbctl edit
 ```
 
 ```
@@ -120,11 +173,11 @@ sh sing-box-onekey.sh edit
 ### 非交互编辑
 
 ```sh
-sh sing-box-onekey.sh edit NODE_NAME=hk-node-2
-sh sing-box-onekey.sh edit SNI=www.nvidia.com
-sh sing-box-onekey.sh edit VLESS_PORT=65010
-sh sing-box-onekey.sh edit ENABLE_HY2=1 HY2_PORT=65011   # 补装 hy2
-sh sing-box-onekey.sh edit ENABLE_VLESS=0                 # 停用 vless,只留 hy2
+sbctl edit NODE_NAME=hk-node-2
+sbctl edit SNI=www.nvidia.com
+sbctl edit VLESS_PORT=65010
+sbctl edit ENABLE_HY2=1 HY2_PORT=65011   # 补装 hy2
+sbctl edit ENABLE_VLESS=0                # 停用 vless,只留 hy2
 ```
 
 支持的字段：
@@ -169,6 +222,7 @@ sh sing-box-onekey.sh edit ENABLE_VLESS=0                 # 停用 vless,只留 
 | 配置目录 | `/etc/sb-onekey` | `/etc/sing-box` |
 | 二进制 | `/usr/local/bin/sb-onekey` | `/etc/sing-box/sing-box` |
 | 日志 | `/var/log/sb-onekey.log` | 各自的 |
+| 命令入口 | `/usr/local/bin/sbctl` | 各自的 |
 
 所以同一台机器上可以两套并存，互不干扰。`uninstall` 也只删自己的。
 
@@ -183,7 +237,16 @@ A：不支持。本脚本专为 Alpine + OpenRC 设计（用 `rc-service` / `rc-
 A：**必须是你云厂商安全组已放行的端口**。脚本会检查本机端口占用，但检查不了云厂商安全组——放行是另一回事。
 
 **Q：改了 SNI 之后节点连不上？**
-A：hy2 的 `pinSHA256` 证书指纹变了。重新跑 `info` 复制新链接，旧链接里的指纹已失效。
+A：hy2 的 `pinSHA256` 证书指纹变了。重新跑 `sbctl info` 复制新链接，旧链接里的指纹已失效。
+
+**Q：提示 `sbctl: not found`？**
+A：v1.3 及更早版本装的没有这个命令。**不用卸载重装**——随便跑一次 `sh sing-box-onekey.sh info`（或 `edit`），脚本会自动把自己补装成 `sbctl`。
+
+**Q：`/usr/local/bin/sb-onekey` 和 `sbctl` 有什么区别？**
+A：前者是 **sing-box 二进制**（服务实际跑的程序），后者是**本脚本**的入口。两者故意分开命名，避免脚本把二进制覆盖掉。
+
+**Q：`info` 显示「服务运行中」但端口「未监听」？**
+A：进程活着但 inbound 没绑上。先看 `tail -30 /var/log/sb-onekey.log`，常见原因是端口被别的进程抢了，或配置里 listen 地址不对。改端口用 `sbctl edit VLESS_PORT=xxxxx`。
 
 **Q：能装两个实例吗？**
 A：不能。本脚本是单实例设计（固定目录 + 固定服务名）。要多个节点请用不同机器，或用 fscarmen 那种多配置方案。
@@ -208,10 +271,10 @@ hysteria2://<PASS>@<IP>:65006?sni=www.icloud.com&insecure=1&pinSHA256=<指纹>#<
 ## 卸载
 
 ```sh
-sh sing-box-onekey.sh uninstall
+sbctl uninstall
 ```
 
-会删除：服务、`/etc/sb-onekey`、`/usr/local/bin/sb-onekey`、日志。**不影响**其他 sing-box 安装。
+会删除：服务、`/etc/sb-onekey`、`/usr/local/bin/sb-onekey`、`/usr/local/bin/sbctl`、日志。**不影响**其他 sing-box 安装。
 
 ---
 
