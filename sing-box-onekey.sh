@@ -20,6 +20,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
+SCRIPT_VER="1.5"                      # 本脚本自身版本(用于判断 sbctl 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -367,6 +368,10 @@ port_state() {  # $1=端口 $2=tcp|udp  输出带颜色的监听状态
 
 # 把脚本自身装成 sbctl,装完就不用再记 sing-box-onekey.sh 放哪了
 install_self() {
+    # 已装且版本一致 => 什么都不做(避免每次 info 都白下载一遍)
+    if [ -x "$SELF_BIN" ] && grep -q "^SCRIPT_VER=\"$SCRIPT_VER\"" "$SELF_BIN" 2>/dev/null; then
+        return 0
+    fi
     _tmp="/tmp/.sbctl.$$"
     _src=""
     # curl|sh 场景下 $0 是 sh 或 /dev/fd/63,不可用 => 回源下载
@@ -388,7 +393,7 @@ install_self() {
     chmod 755 "$_tmp"
     # 用 mv 而非 install:覆盖正在执行的文件时,install 会报 Text file busy
     mv -f "$_tmp" "$SELF_BIN" 2>/dev/null || { rm -f "$_tmp"; warn "sbctl 安装失败(权限?)"; return 0; }
-    ok "命令已安装: $SELF_BIN  (以后直接 sbctl info / sbctl edit)"
+    ok "命令已安装: $SELF_BIN  (v$SCRIPT_VER,以后直接 sbctl info / sbctl edit)"
 }
 
 show_links() {
@@ -434,7 +439,7 @@ detect_existing() {
 
 # ---------- 安装 ----------
 do_install() {
-    [ -f "$PARAMS" ] && die "已安装过(参数在 $PARAMS)。查看: sbctl info ;编辑: sbctl edit ;重装请先: sbctl uninstall"
+    [ -f "$PARAMS" ] && die "已安装过(参数在 $PARAMS)。看状态: sbctl info(或不带参数重跑本脚本);改配置: sbctl edit;重装请先: sbctl uninstall"
     detect_os
     detect_existing
     install_deps
@@ -517,6 +522,7 @@ do_info() {
     fi
     printf "${CYN}==============================${NC}\n"
     show_links
+    printf "\n  改配置: ${CYN}sbctl edit${NC}    卸载: ${CYN}sbctl uninstall${NC}    帮助: ${CYN}sbctl help${NC}\n\n"
 }
 
 # ---------- 编辑 ----------
@@ -721,12 +727,15 @@ EOF
 
 # 老版本(≤v1.3)装的没有 sbctl。除 install/uninstall 外的子命令顺手补装一次,
 # 这样 `sh sing-box-onekey.sh info` 跑一下就自动有了 sbctl,不用卸载重装。
-case "${1:-install}" in
+case "${1:-}" in
     install|uninstall|remove) ;;
-    *) [ -x "$SELF_BIN" ] || install_self ;;
+    *) install_self ;;
 esac
 
-case "${1:-install}" in
+# 不带参数时的默认行为:已安装 => 看状态;未安装 => 安装
+# (v1.4 及更早默认走 install,已装会直接报"已安装过"然后退出,重跑脚本想看状态反被拒)
+case "${1:-}" in
+    "") if [ -f "$PARAMS" ]; then do_info; else do_install; fi ;;
     install)            do_install ;;
     info|status|show)   do_info ;;
     edit)               do_edit "$@" ;;

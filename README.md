@@ -26,10 +26,14 @@
 ### 方式 1：全交互（推荐首次使用）
 
 ```sh
-wget -qO- https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh
 ```
 
-会依次问：**协议类型 → 端口 → SNI 域名 → 节点名称**。
+首次运行会依次问：**协议类型 → 端口 → SNI 域名 → 节点名称**。
+
+装好之后再跑同一条命令，**不会再报"已安装过"，而是直接显示当前状态**（协议 / 端口 / 监听 / 链接），可以当"查看"用。
+
+> 用 `curl -fsSL` 而不是 `wget -qO-`：`wget` 失败时会把错误页灌给 `sh`，看到一堆 `syntax error`；`curl -f` 失败直接不输出。
 
 ### 方式 2：只装一种协议
 
@@ -57,6 +61,7 @@ sh sing-box-onekey.sh
 安装时会把脚本自身装成命令 **`sbctl`**（`/usr/local/bin/sbctl`），所以装完之后：
 
 ```sh
+sbctl             # 不带参数:已装 = 看状态,未装 = 开始安装
 sbctl info        # 查看已装协议 / 端口 / 监听状态 / 服务状态 / 分享链接
 sbctl status      # 同 info
 sbctl edit        # 交互式编辑(推荐)
@@ -65,10 +70,16 @@ sbctl help        # 帮助
 sbctl uninstall   # 彻底卸载(只清自己)
 ```
 
+> **重跑脚本不会再报错**：不带参数时，已安装就显示当前状态，没装才开始装。所以下面这条可以随时执行，用来「看一眼现在什么情况」：
+>
+> ```sh
+> curl -fsSL https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh
+> ```
+
 没装之前（或 `curl | sh` 中途失败）仍可用脚本原名：
 
 ```sh
-sh sing-box-onekey.sh              # 安装(默认)
+sh sing-box-onekey.sh              # 不带参数:已装看状态 / 未装安装
 sh sing-box-onekey.sh info         # 查看
 sh sing-box-onekey.sh edit         # 编辑
 sh sing-box-onekey.sh uninstall    # 卸载
@@ -235,6 +246,9 @@ A：不支持。本脚本专为 Alpine + OpenRC 设计（用 `rc-service` / `rc-
 
 **Q：端口要填多少？**
 A：**必须是你云厂商安全组已放行的端口**。脚本会检查本机端口占用，但检查不了云厂商安全组——放行是另一回事。
+
+**Q：重跑脚本提示「已安装过」怎么办？**
+A：v1.4 及更早会这样。v1.5 起不带参数重跑直接显示状态；如果你手上是旧版，改用 `sbctl info`（或 `sh sing-box-onekey.sh info`）查看，不用卸载重装。
 
 **Q：改了 SNI 之后节点连不上？**
 A：hy2 的 `pinSHA256` 证书指纹变了。重新跑 `sbctl info` 复制新链接，旧链接里的指纹已失效。
