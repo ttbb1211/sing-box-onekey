@@ -1,14 +1,14 @@
 #!/bin/sh
 # =============================================================
-#  sing-box-onekey.sh — 裸机一键搭建 vless-reality + hysteria2
+#  sing-box-onekey.sh — Alpine 裸机一键搭建 vless-reality + hysteria2
+#  (专用 Alpine,OpenRC;与 fscarmen 等第三方脚本完全隔离共存)
 #
-#  支持: Alpine / Debian / Ubuntu (自动识别系统与 init)
 #  用法:
 #    wget -qO- https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh
-#    sh sing-box-onekey.sh              # 安装(交互输入端口/域名/节点名)
+#    sh sing-box-onekey.sh              # 安装(交互输入端口/域名/节点名,端口必填)
 #    VLESS_PORT=6501 HY2_PORT=6502 sh sing-box-onekey.sh   # 环境变量跳过交互
 #    sh sing-box-onekey.sh info         # 查看参数与分享链接
-#    sh sing-box-onekey.sh uninstall    # 彻底卸载
+#    sh sing-box-onekey.sh uninstall    # 彻底卸载(只清自己,不动第三方)
 # =============================================================
 set -u
 
@@ -32,33 +32,15 @@ die() { printf "${RED}[错误]${NC} %s\n" "$1" >&2; exit 1; }
 [ "$(id -u)" = "0" ] || die "请用 root 运行"
 
 detect_os() {
-    if [ -f /etc/alpine-release ]; then
-        OS="alpine"
-    elif command -v apt-get >/dev/null 2>&1; then
-        OS="debian"
-    else
-        die "不支持的系统(仅支持 Alpine / Debian / Ubuntu)"
-    fi
-    # init 系统
-    if [ -d /run/systemd/system ] || command -v systemctl >/dev/null 2>&1; then
-        INIT="systemd"
-    else
-        INIT="openrc"
-    fi
-    info "系统: $OS / init: $INIT"
+    [ -f /etc/alpine-release ] || die "本脚本仅支持 Alpine 系统(检测到非 Alpine)"
+    command -v rc-service >/dev/null 2>&1 || die "未检测到 OpenRC(rc-service),请确认系统完整"
+    info "系统: Alpine $(cat /etc/alpine-release) / init: OpenRC"
 }
 
 install_deps() {
-    # 只装缺失的,已有就跳过(apk/apt 自动去重)
     info "检查并安装依赖 curl openssl tar..."
-    if [ "$OS" = "alpine" ]; then
-        apk update >/dev/null 2>&1 || true
-        apk add --no-cache curl openssl tar >/dev/null
-    else
-        export DEBIAN_FRONTEND=noninteractive
-        apt-get update -qq >/dev/null
-        apt-get install -y -qq curl openssl tar >/dev/null
-    fi
+    apk update >/dev/null 2>&1 || true
+    apk add --no-cache curl openssl tar >/dev/null
     command -v curl >/dev/null 2>&1 || die "curl 安装失败"
     command -v openssl >/dev/null 2>&1 || die "openssl 安装失败"
     ok "依赖就绪"
@@ -157,7 +139,7 @@ load_params() {
 
 # ---------- hy2 自签证书(换证书前必须先停服务) ----------
 gen_cert() {
-    rc-service sb-onekey stop >/dev/null 2>&1 || systemctl stop sb-onekey 2>/dev/null || true
+    rc-service sb-onekey stop >/dev/null 2>&1 || true
     openssl req -x509 -newkey rsa:2048 \
         -keyout "$CONF_DIR/hy2.key" -out "$CONF_DIR/hy2.crt" \
         -days 3650 -nodes \
@@ -166,7 +148,7 @@ gen_cert() {
     ok "hy2 自签证书生成 ($SNI, 10年)"
 }
 
-# ---------- 配置生成(协议块模块化,新协议加一个 gen_inbound_xxx 再挂进 CONFIG_INBOUNDS) ----------
+# ---------- 配置生成(协议块模块化,新协议加一个 gen_inbound_xxx 再挂进 write_config) ----------
 gen_inbound_vless() {
     cat <<EOF
     {
@@ -224,48 +206,29 @@ write_config() {
     ok "配置校验通过"
 }
 
-# ---------- 服务管理 ----------
+# ---------- 服务管理(OpenRC,独立服务名 sb-onekey,与 fscarmen 等第三方隔离) ----------
 svc_install() {
-    if [ "$INIT" = "openrc" ]; then
-        cat > /etc/init.d/sb-onekey <<'EOF'
+    cat > /etc/init.d/sb-onekey <<'EOF'
 #!/sbin/openrc-run
-name="sing-box"
+name="sb-onekey"
 description="sb-onekey node (vless-reality + hysteria2)"
-command="/usr/local/bin/sing-box"
-command_args="run -c /etc/sing-box/config.json"
+command="/usr/local/bin/sb-onekey"
+command_args="run -c /etc/sb-onekey/config.json"
 command_background="yes"
 pidfile="/run/sb-onekey.pid"
 output_log="/var/log/sb-onekey.log"
 error_log="/var/log/sb-onekey.log"
 depend() { need net; }
 EOF
-        chmod +x /etc/init.d/sb-onekey
-        rc-update add sb-onekey default 2>/dev/null || true
-        rc-service sb-onekey restart
-    else
-        cat > /etc/systemd/system/sb-onekey.service <<'EOF'
-[Unit]
-After=network.target
-[Service]
-ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
-Restart=on-failure
-[Install]
-WantedBy=multi-user.target
-EOF
-        systemctl daemon-reload
-        systemctl enable sb-onekey >/dev/null
-        systemctl restart sb-onekey
-    fi
+    chmod +x /etc/init.d/sb-onekey
+    rc-update add sb-onekey default 2>/dev/null || true
+    rc-service sb-onekey restart
     sleep 1
-    svc_status || die "服务启动失败,查看日志: tail -30 /var/log/sing-box.log 或 journalctl -u sing-box"
+    svc_status || die "服务启动失败,查看日志: tail -30 /var/log/sb-onekey.log"
 }
 
 svc_status() {
-    if [ "$INIT" = "openrc" ]; then
-        rc-service sb-onekey status >/dev/null 2>&1
-    else
-        systemctl is-active sb-onekey >/dev/null 2>&1
-    fi
+    rc-service sb-onekey status >/dev/null 2>&1
 }
 
 get_ip() {
@@ -280,8 +243,8 @@ show_links() {
     load_params
     _fp="$(openssl x509 -in "$CONF_DIR/hy2.crt" -outform der 2>/dev/null | openssl dgst -sha256 -hex | awk '{print $2}' | tr -d ':' | tr 'a-z' 'A-Z')"
     _ip="$(get_ip)"
-    _n1="$(urlencode "🇭🇰 ${NODE_NAME} reality")"
-    _n2="$(urlencode "🇭🇰 ${NODE_NAME} hy2")"
+    _n1="$(urlencode "${NODE_NAME} reality")"
+    _n2="$(urlencode "${NODE_NAME} hy2")"
     echo ""
     printf "${CYN}========== 分享链接 ==========${NC}\n"
     echo "vless://${UUID}@${_ip}:${VLESS_PORT}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${SNI}&fp=chrome&pbk=${REALITY_PUB}&sid=${SHORT_ID}&type=tcp&headerType=none#${_n1}"
@@ -298,9 +261,6 @@ detect_existing() {
     # fscarmen 版 sing-box:二进制在 /etc/sing-box/、配置在 /etc/sing-box/conf
     if [ -x /etc/sing-box/sing-box ] || [ -d /etc/sing-box/conf ]; then
         warn "检测到 fscarmen 版 sing-box,本脚本与其完全隔离(服务名 sb-onekey,目录 /etc/sb-onekey),可共存"
-    fi
-    if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q "^sing-box"; then
-        warn "检测到系统里已有 sing-box 服务,本脚本将以独立服务名 sb-onekey 运行,互不干扰"
     fi
 }
 
@@ -336,24 +296,16 @@ do_install() {
 do_info() {
     detect_os
     load_params
-    svc_status && ok "服务运行中" || warn "服务未运行(启动: rc-service sing-box start / systemctl start sing-box)"
+    svc_status && ok "服务运行中" || warn "服务未运行(启动: rc-service sb-onekey start)"
     show_links
 }
 
 do_uninstall() {
     detect_os
-    if [ "$INIT" = "openrc" ]; then
-        rc-service sb-onekey stop >/dev/null 2>&1 || true
-        rc-update del sb-onekey default >/dev/null 2>&1 || true
-        rm -f /etc/init.d/sb-onekey
-    else
-        systemctl stop sb-onekey 2>/dev/null || true
-        systemctl disable sb-onekey >/dev/null 2>&1 || true
-        rm -f /etc/systemd/system/sb-onekey.service
-        systemctl daemon-reload
-    fi
-    rm -rf "$CONF_DIR" "$BIN" /var/log/sing-box.log
-    ok "已彻底卸载(配置/二进制/服务/日志全清)"
+    rc-service sb-onekey stop >/dev/null 2>&1 || true
+    rc-update del sb-onekey default >/dev/null 2>&1 || true
+    rm -rf "$CONF_DIR" "$BIN" /var/log/sb-onekey.log /etc/init.d/sb-onekey
+    ok "已彻底卸载(只清 sb-onekey 自己的,不影响 fscarmen 等第三方安装)"
 }
 
 case "${1:-install}" in
