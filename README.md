@@ -1,86 +1,220 @@
 # sing-box-onekey
 
-**Alpine 专用**裸机一键搭建 sing-box 节点（vless-reality + hysteria2 双协议）。自动安装缺失依赖，全新机器一条命令跑通。
+**Alpine 裸机一键搭建 sing-box 节点** — 支持 **vless-reality** / **hysteria2**，协议可自选，装完还能随时改。
 
-> 设计原则：不走第三方安装脚本，全部手工部署逻辑固化；**与 fscarmen/sing-box 等第三方安装完全隔离共存**（独立服务名/目录/二进制），装、卸都不动第三方的东西。
+> 专为 Alpine + OpenRC 设计，与 fscarmen 等第三方脚本**完全隔离共存**（独立服务名、独立目录、独立二进制）。
 
-## 一键安装
+---
 
-```bash
+## 特性
+
+| 特性 | 说明 |
+|---|---|
+| **协议自选** | 只装 vless、只装 hy2、或两个都装；装完还能随时启用/禁用 |
+| **装后可编辑** | `edit` 子命令改端口 / SNI / 节点名，重置 UUID / 密码 / reality 密钥，全程不用重装 |
+| **零依赖** | Alpine 裸机直接跑，脚本自动装 curl / openssl / tar |
+| **端口必填** | 不设默认端口，避免和别人撞车 |
+| **隔离共存** | 服务名 `sb-onekey`、目录 `/etc/sb-onekey`、二进制 `/usr/local/bin/sb-onekey`，不碰任何第三方安装 |
+| **自动校验** | 生成配置后跑 `sing-box check`，校验不过直接退出，不会留半残配置 |
+
+---
+
+## 快速开始
+
+### 方式 1：全交互（推荐首次使用）
+
+```sh
 wget -qO- https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh
 ```
 
-安装过程会依次要求输入（管道执行时自动从终端读取）：
+会依次问：**协议类型 → 端口 → SNI 域名 → 节点名称**。
 
-| 项 | 说明 | 默认 |
-|---|---|---|
-| vless-reality 端口 | 1-65535，**必填** | 无（必须输入） |
-| hysteria2 端口 | 1-65535，**必填**，不能与上面相同，被占用会拒绝 | 无（必须输入） |
-| SNI 域名 | reality 握手目标，自动预检可达性 | `www.icloud.com` |
-| 节点名称 | 出现在分享链接里，**不自动加国旗** | 主机名 |
+### 方式 2：只装一种协议
 
-装完直接打印两条分享链接（vless:// 和 hysteria2://，链接自带证书指纹 pinSHA256），导入 v2rayN / v2rayNG / sing-box 客户端即可。
+```sh
+# 只装 vless-reality
+PROTOCOLS=vless VLESS_PORT=65005 sh sing-box-onekey.sh
 
-## 免交互（自动化场景）
-
-任何一项都可用环境变量跳过交互：
-
-```bash
-VLESS_PORT=6501 HY2_PORT=6502 SNI=www.nvidia.com NODE_NAME=圣何塞-1 sh sing-box-onekey.sh
+# 只装 hysteria2
+PROTOCOLS=hy2 HY2_PORT=65006 sh sing-box-onekey.sh
 ```
 
-> 端口没有默认值：非交互环境又没给环境变量时会直接报错退出，避免装出一台端口未知的机器。
+### 方式 3：全参数非交互（适合批量部署）
+
+```sh
+PROTOCOLS=vless,hy2 \
+VLESS_PORT=65005 HY2_PORT=65006 \
+SNI=www.icloud.com NODE_NAME=hk-node-1 \
+sh sing-box-onekey.sh
+```
+
+---
 
 ## 子命令
 
-```bash
-sh sing-box-onekey.sh install    # 安装（默认，可省略）
-sh sing-box-onekey.sh info       # 查看参数与分享链接（重装系统后找回链接也用它）
-sh sing-box-onekey.sh uninstall  # 彻底卸载（只清 sb-onekey 自己的）
+```sh
+sh sing-box-onekey.sh              # 安装(默认)
+sh sing-box-onekey.sh info         # 查看当前协议、端口、分享链接
+sh sing-box-onekey.sh edit         # 交互式编辑(推荐)
+sh sing-box-onekey.sh edit SNI=www.nvidia.com VLESS_PORT=65010   # 非交互编辑
+sh sing-box-onekey.sh uninstall    # 彻底卸载(只清自己)
 ```
 
-## 与 fscarmen 等第三方脚本共存
+---
 
-| | 本脚本 | fscarmen/sing-box |
+## 协议选择
+
+安装时会问：
+
+```
+请选择要安装的协议:
+  1) 仅 vless-reality
+  2) 仅 hysteria2
+  3) 两个都装
+请选择 [1/2/3, 回车默认 3]:
+```
+
+也可用环境变量 `PROTOCOLS` 直接指定：
+
+| 写法 | 效果 |
+|---|---|
+| `PROTOCOLS=vless` | 仅 vless-reality |
+| `PROTOCOLS=hy2` | 仅 hysteria2 |
+| `PROTOCOLS=vless,hy2` | 两个都装 |
+
+> 非交互环境（无 TTY）下不指定 `PROTOCOLS` 时，默认装两个，并打印提示。
+
+---
+
+## 装完再改：`edit`
+
+```sh
+sh sing-box-onekey.sh edit
+```
+
+```
+========== 当前配置 ==========
+  协议      : vless-reality hysteria2
+  节点名称  : hk-node-1
+  SNI       : www.icloud.com
+  vless 端口: 65005
+  hy2 端口  : 65006
+==============================
+
+修改项:
+  1) 节点名称
+  2) SNI 域名(会重签 hy2 证书)
+  3) vless 端口
+  4) hy2 端口
+  5) 重置 vless UUID
+  6) 重置 hy2 密码
+  7) 重置 reality 密钥对
+  8) 启用/禁用协议
+  9) 只看分享链接
+  0) 退出
+请选择:
+```
+
+每次修改都会：**写回参数 → 重建配置 → `sing-box check` → 重启服务 → 打印新链接**。
+
+### 非交互编辑
+
+```sh
+sh sing-box-onekey.sh edit NODE_NAME=hk-node-2
+sh sing-box-onekey.sh edit SNI=www.nvidia.com
+sh sing-box-onekey.sh edit VLESS_PORT=65010
+sh sing-box-onekey.sh edit ENABLE_HY2=1 HY2_PORT=65011   # 补装 hy2
+sh sing-box-onekey.sh edit ENABLE_VLESS=0                 # 停用 vless,只留 hy2
+```
+
+支持的字段：
+
+| 字段 | 说明 |
+|---|---|
+| `NODE_NAME` | 节点名称（分享链接里的备注） |
+| `SNI` | 伪装域名，改后会自动重签 hy2 证书 |
+| `VLESS_PORT` / `HY2_PORT` | 端口，会自动检查占用 |
+| `UUID` / `HY2_PASS` / `SHORT_ID` | 手动指定凭据 |
+| `ENABLE_VLESS` / `ENABLE_HY2` | `1` 启用 / `0` 停用 |
+
+### 几个细节
+
+- **改端口**：旧端口自动释放，新端口先查占用，被占就拒绝
+- **改 SNI**：hy2 证书自动重签（`pinSHA256` 会变，**旧链接立即失效，要重新复制**）
+- **启用 hy2**：如果证书不存在会自动生成
+- **禁用某协议**：配置文件里对应 inbound 直接移除，端口释放
+
+---
+
+## 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PROTOCOLS` | 交互询问 | `vless` / `hy2` / `vless,hy2` |
+| `VLESS_PORT` | 必填 | vless-reality 监听端口 |
+| `HY2_PORT` | 必填 | hysteria2 监听端口 |
+| `SNI` | `www.icloud.com` | 伪装域名（reality 握手目标 / hy2 证书 CN） |
+| `NODE_NAME` | 主机名 | 节点名称 |
+| `SB_VERSION` | 自动查最新 | 指定 sing-box 版本，如 `1.14.3` |
+
+---
+
+## 与第三方脚本共存
+
+本脚本用**独立命名空间**，不会碰别人的东西：
+
+| 资源 | 本脚本 | fscarmen 脚本 |
 |---|---|---|
 | 服务名 | `sb-onekey` | `sing-box` |
-| 目录 | `/etc/sb-onekey` | `/etc/sing-box` |
+| 配置目录 | `/etc/sb-onekey` | `/etc/sing-box` |
 | 二进制 | `/usr/local/bin/sb-onekey` | `/etc/sing-box/sing-box` |
+| 日志 | `/var/log/sb-onekey.log` | 各自的 |
 
-互不覆盖、互不干扰，可同机共存。唯一要避开的是**端口冲突**——安装时会预检端口占用，被占用的端口直接拒绝。
+所以同一台机器上可以两套并存，互不干扰。`uninstall` 也只删自己的。
 
-## 自定义 sing-box 版本
+---
 
-默认安装 GitHub 最新稳定版（API 不可用时兜底 v1.14.3）：
+## 常见问题
 
-```bash
-SB_VERSION=1.12.14 sh sing-box-onekey.sh
+**Q：支持 Debian / Ubuntu 吗？**
+A：不支持。本脚本专为 Alpine + OpenRC 设计（用 `rc-service` / `rc-update` / `apk`）。Debian 系请用 fscarmen 等脚本。
+
+**Q：端口要填多少？**
+A：**必须是你云厂商安全组已放行的端口**。脚本会检查本机端口占用，但检查不了云厂商安全组——放行是另一回事。
+
+**Q：改了 SNI 之后节点连不上？**
+A：hy2 的 `pinSHA256` 证书指纹变了。重新跑 `info` 复制新链接，旧链接里的指纹已失效。
+
+**Q：能装两个实例吗？**
+A：不能。本脚本是单实例设计（固定目录 + 固定服务名）。要多个节点请用不同机器，或用 fscarmen 那种多配置方案。
+
+**Q：`edit` 之后要手动重启服务吗？**
+A：不用，脚本会自动重启并校验状态。如果重启失败会报错并提示看 `/var/log/sb-onekey.log`。
+
+---
+
+## 输出示例
+
+```
+========== 分享链接 ==========
+vless://<UUID>@<IP>:65005?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.icloud.com&fp=chrome&pbk=<PUBKEY>&sid=<SID>&type=tcp&headerType=none#<节点名>%20reality
+
+hysteria2://<PASS>@<IP>:65006?sni=www.icloud.com&insecure=1&pinSHA256=<指纹>#<节点名>%20hy2
+==============================
 ```
 
-## 安装了什么
-
-| 路径 | 内容 |
-|---|---|
-| `/usr/local/bin/sb-onekey` | sing-box 二进制副本（GitHub Releases 原版） |
-| `/etc/sb-onekey/config.json` | 配置（vless-reality + hysteria2 双入站） |
-| `/etc/sb-onekey/params.env` | 全部生成参数（权限 600，`info` 命令读它） |
-| `/etc/sb-onekey/hy2.crt` `.key` | hysteria2 自签证书（10 年，CN=SNI 域名） |
-| `/etc/init.d/sb-onekey` | OpenRC 服务，开机自启 |
-
-## 注意事项
-
-- **仅支持 Alpine**（OpenRC）；Debian/Ubuntu 机器请勿使用
-- **端口放行**：安装完记得在云厂商安全组放行 `TCP <vless端口>` + `UDP <hy2端口>`，脚本不管这一步
-- **hy2 证书**：自签，链接已带 `pinSHA256`；换证书后链接里的指纹要同步更新（`info` 会输出当前指纹对应的最新链接）
-- **reality 握手目标**：选大厂稳定域名（icloud / nvidia 等），脚本会预检，预检不通建议换
-- hysteria2 未声明上下行限速，走 BBR 拥塞控制按线路自适应
-
-## 扩展新协议
-
-`config.json` 的生成按协议块函数拆分（`gen_inbound_vless` / `gen_inbound_hy2`），后续加新协议只需新增一个 `gen_inbound_xxx` 函数并在 `write_config` 里挂载，欢迎 PR。
+---
 
 ## 卸载
 
-```bash
+```sh
 sh sing-box-onekey.sh uninstall
 ```
+
+会删除：服务、`/etc/sb-onekey`、`/usr/local/bin/sb-onekey`、日志。**不影响**其他 sing-box 安装。
+
+---
+
+## 免责声明
+
+仅供个人学习与自建服务使用。请遵守所在地区的法律法规。
