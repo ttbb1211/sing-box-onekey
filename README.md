@@ -66,9 +66,19 @@ sbctl info        # 查看已装协议 / 端口 / 监听状态 / 服务状态 / 
 sbctl status      # 同 info
 sbctl edit        # 交互式编辑(推荐)
 sbctl edit SNI=www.nvidia.com VLESS_PORT=65010   # 非交互编辑
+sbctl remove      # 删节点(释放端口),保留 sbctl 命令,以后可再 install
+sbctl uninstall   # 彻底卸载(节点 + sbctl 命令一起删)
 sbctl help        # 帮助
-sbctl uninstall   # 彻底卸载(只清自己)
 ```
+
+**`remove` 和 `uninstall` 的区别**（别用错）：
+
+| 命令 | 删节点 | 删 `sbctl` 命令 | 以后还能用 sbctl 吗 |
+|---|---|---|---|
+| `sbctl remove` | ✅ | ❌ | ✅ 能，直接 `sbctl install` 重装 |
+| `sbctl uninstall` | ✅ | ✅ | ❌ 不能，`sbctl: not found` |
+
+> 只想「把这个节点拆掉、换个端口重装」→ 用 `remove`。想把机器恢复成完全没装过的样子 → 用 `uninstall`。
 
 > **重跑脚本不会再报错**：不带参数时，已安装就显示当前状态，没装才开始装。所以下面这条可以随时执行，用来「看一眼现在什么情况」：
 >
@@ -282,13 +292,34 @@ hysteria2://<PASS>@<IP>:65006?sni=www.icloud.com&insecure=1&pinSHA256=<指纹>#<
 
 ---
 
-## 卸载
+## 删除节点 / 卸载
+
+**只删节点，保留命令**（推荐，换端口重装前用这个）：
+
+```sh
+sbctl remove
+```
+
+删除：服务、`/etc/sb-onekey`、`/usr/local/bin/sb-onekey`、`/etc/init.d/sb-onekey`、日志。
+保留：`/usr/local/bin/sbctl`，所以随时 `sbctl install` 重装。
+
+**彻底卸载**（连命令一起清掉）：
 
 ```sh
 sbctl uninstall
 ```
 
-会删除：服务、`/etc/sb-onekey`、`/usr/local/bin/sb-onekey`、`/usr/local/bin/sbctl`、日志。**不影响**其他 sing-box 安装。
+删除：上面全部 + `/usr/local/bin/sbctl`。删完 `sbctl` 就 not found 了。
+
+> 两者都**不影响** fscarmen 等其他 sing-box 安装。
+>
+> 如果 `sbctl` 已经没了又想装回来（不装节点），跑：
+>
+> ```sh
+> curl -fsSL https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh -s -- help
+> ```
+>
+> `help` 子命令只装命令、不装节点。
 
 ---
 

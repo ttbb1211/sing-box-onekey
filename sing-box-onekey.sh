@@ -20,7 +20,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="1.5"                      # 本脚本自身版本(用于判断 sbctl 是否需要更新)
+SCRIPT_VER="1.6"                      # 本脚本自身版本(用于判断 sbctl 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -692,13 +692,28 @@ do_edit() {
     done
 }
 
-# ---------- 卸载 ----------
+# ---------- 删除节点(保留 sbctl 命令,方便以后重装) ----------
+do_remove() {
+    detect_os
+    if [ ! -f "$PARAMS" ] && [ ! -x "$BIN" ]; then
+        warn "本机没有 sb-onekey 节点,无需删除"
+        return 0
+    fi
+    rc-service sb-onekey stop >/dev/null 2>&1 || true
+    rc-update del sb-onekey default >/dev/null 2>&1 || true
+    rm -rf "$CONF_DIR" "$BIN" /var/log/sb-onekey.log /etc/init.d/sb-onekey
+    ok "节点已删除,端口已释放"
+    ok "sbctl 命令保留在 $SELF_BIN —— 随时可 sbctl install 重装"
+}
+
+# ---------- 彻底卸载(节点 + sbctl 命令) ----------
 do_uninstall() {
     detect_os
     rc-service sb-onekey stop >/dev/null 2>&1 || true
     rc-update del sb-onekey default >/dev/null 2>&1 || true
     rm -rf "$CONF_DIR" "$BIN" /var/log/sb-onekey.log /etc/init.d/sb-onekey "$SELF_BIN"
-    ok "已彻底卸载(只清 sb-onekey 自己的,不影响 fscarmen 等第三方安装)"
+    ok "已彻底卸载(节点 + sbctl 命令都已删除,不影响 fscarmen 等第三方安装)"
+    printf "  只想删节点、保留命令的话,下次用: %s\n" "sbctl remove"
 }
 
 do_help() {
@@ -707,12 +722,13 @@ do_help() {
 
 用法:  sbctl <子命令>        (安装后可用;或 sh sing-box-onekey.sh <子命令>)
 
-  install      安装(交互选协议/端口/SNI/节点名);已安装会拒绝,需先 uninstall
+  install      安装(交互选协议/端口/SNI/节点名);已安装会拒绝,需先 remove
   info         查看已装协议、端口、监听状态、服务状态与分享链接
   status       info 的别名
   edit         交互式编辑(改节点名/SNI/端口/重置凭据/启停协议)
   edit K=V...  非交互编辑,例: sbctl edit VLESS_PORT=65006 ENABLE_HY2=1
-  uninstall    彻底卸载(只删自己,不动 fscarmen 等第三方)
+  remove       删除节点(释放端口),保留 sbctl 命令,以后可再 sbctl install
+  uninstall    彻底卸载(节点 + sbctl 命令一起删,删完 sbctl 就没了)
   help         显示本帮助
 
 安装时可用的环境变量(非交互):
@@ -728,7 +744,7 @@ EOF
 # 老版本(≤v1.3)装的没有 sbctl。除 install/uninstall 外的子命令顺手补装一次,
 # 这样 `sh sing-box-onekey.sh info` 跑一下就自动有了 sbctl,不用卸载重装。
 case "${1:-}" in
-    install|uninstall|remove) ;;
+    install|uninstall|purge|remove|del|rm|delete) ;;
     *) install_self ;;
 esac
 
@@ -736,10 +752,11 @@ esac
 # (v1.4 及更早默认走 install,已装会直接报"已安装过"然后退出,重跑脚本想看状态反被拒)
 case "${1:-}" in
     "") if [ -f "$PARAMS" ]; then do_info; else do_install; fi ;;
-    install)            do_install ;;
-    info|status|show)   do_info ;;
-    edit)               do_edit "$@" ;;
-    uninstall|remove)   do_uninstall ;;
-    help|-h|--help)     do_help ;;
-    *) die "未知子命令: $1(可用: install|info|status|edit|uninstall|help)" ;;
+    install)                    do_install ;;
+    info|status|show)           do_info ;;
+    edit)                       do_edit "$@" ;;
+    remove|del|rm|delete)       do_remove ;;
+    uninstall|purge)            do_uninstall ;;
+    help|-h|--help)             do_help ;;
+    *) die "未知子命令: $1(可用: install|info|status|edit|remove|uninstall|help)" ;;
 esac
