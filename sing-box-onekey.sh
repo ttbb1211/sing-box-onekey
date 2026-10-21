@@ -20,7 +20,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="1.10"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="1.11"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -951,31 +951,46 @@ do_bbr() {
     _cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
     _qd="$(sysctl -n net.core.default_qdisc 2>/dev/null)"
     info "当前: 拥塞控制=${_cc:-未知}  队列调度=${_qd:-未知}"
-    if [ "$_cc" = "bbr" ]; then
-        ok "BBR 已开启,无需操作"
-        return 0
+
+    # ★ 已经是 bbr 也不能直接 return —— 镜像默认开 / 别人临时开过的机器,
+    #   往往只有运行值、没有持久化,重启就退回 cubic。这里统一补齐三件套。
+    _fixed=""
+    if [ "$_cc" != "bbr" ] || [ "$_qd" != "fq" ]; then
+        modprobe tcp_bbr 2>/dev/null || true
+        if ! grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+            die "当前内核不支持 BBR(可用算法: $(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null))"
+        fi
     fi
-    modprobe tcp_bbr 2>/dev/null || true
-    if ! grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
-        die "当前内核不支持 BBR(可用算法: $(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null))"
-    fi
-    mkdir -p /etc/sysctl.d
-    cat > /etc/sysctl.d/99-bbr.conf <<EOF
+    if [ ! -f /etc/sysctl.d/99-bbr.conf ]; then
+        mkdir -p /etc/sysctl.d
+        cat > /etc/sysctl.d/99-bbr.conf <<EOF
 # 由 sing-box-onekey 写入 ($(date +%F))
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
-    sysctl -p /etc/sysctl.d/99-bbr.conf >/dev/null 2>&1 \
-        || sysctl -w net.core.default_qdisc=fq net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
-    # Alpine: 让 sysctl 服务开机自动加载 /etc/sysctl.d
-    [ -f /etc/init.d/sysctl ] && rc-update add sysctl boot >/dev/null 2>&1
+        _fixed=1
+    fi
+    if [ "$_cc" != "bbr" ] || [ "$_qd" != "fq" ]; then
+        sysctl -p /etc/sysctl.d/99-bbr.conf >/dev/null 2>&1 \
+            || sysctl -w net.core.default_qdisc=fq net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
+        _fixed=1
+    fi
+    # 开机自动加载模块 + 应用 sysctl(缺一项重启后就可能失效)
+    touch /etc/modules 2>/dev/null || true
+    grep -qx tcp_bbr /etc/modules 2>/dev/null || { echo tcp_bbr >> /etc/modules; _fixed=1; }
+    [ -f /etc/init.d/sysctl ]  && rc-update add sysctl boot  >/dev/null 2>&1
+    [ -f /etc/init.d/modules ] && rc-update add modules boot >/dev/null 2>&1
+
     _cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
     _qd="$(sysctl -n net.core.default_qdisc 2>/dev/null)"
-    if [ "$_cc" = "bbr" ]; then
-        ok "BBR 已开启: 拥塞控制=$_cc  队列调度=${_qd:-未设置}"
-        info "已写入 /etc/sysctl.d/99-bbr.conf,重启后自动生效"
-    else
+    if [ "$_cc" != "bbr" ]; then
         die "开启失败,当前仍是 ${_cc:-未知}"
+    fi
+    if [ -n "$_fixed" ]; then
+        ok "BBR 已开启: 拥塞控制=$_cc  队列调度=${_qd:-未设置}"
+        info "已补齐持久化(99-bbr.conf + /etc/modules),重启后自动生效"
+    else
+        ok "BBR 已开启且持久化完整: 拥塞控制=$_cc  队列调度=${_qd:-未设置}"
     fi
 }
 
