@@ -1,6 +1,6 @@
 # sing-box-onekey
 
-**Alpine 裸机一键搭建 sing-box 节点** — 支持 **vless-reality** / **hysteria2**，协议可自选，装完还能随时改。
+**Alpine 裸机一键搭建 sing-box 节点** — 支持 **vless-reality** / **hysteria2**，协议可自选，装完敲 `sb` 出菜单随时改。
 
 > 专为 Alpine + OpenRC 设计，与 fscarmen 等第三方脚本**完全隔离共存**（独立服务名、独立目录、独立二进制）。
 
@@ -10,12 +10,12 @@
 
 | 特性 | 说明 |
 |---|---|
+| **敲 `sb` 出菜单** | 装完直接敲 `sb`，数字选功能，不用记参数 |
 | **协议自选** | 只装 vless、只装 hy2、或两个都装；装完还能随时启用/禁用 |
-| **装后可编辑** | `edit` 改端口 / SNI / 节点名，重置 UUID / 密码 / reality 密钥，全程不用重装 |
-| **状态一眼看清** | `info` 直接列出已装协议、端口、**实际监听状态**、服务状态、sing-box 版本 |
-| **命令自装** | 装完把脚本自身装成 `sbctl`，以后直接 `sbctl info` / `sbctl edit`，不用再记脚本放哪 |
-| **零依赖** | Alpine 裸机直接跑，脚本自动装 curl / openssl / tar |
-| **端口必填** | 不设默认端口，避免和别人撞车 |
+| **装后可编辑** | 改端口 / SNI / 节点名，重置 UUID / 密码 / reality 密钥，全程不用重装 |
+| **状态一眼看清** | 菜单顶部直接显示系统、IP 归属地、服务状态、协议、端口**实时监听状态** |
+| **一键 BBR** | 菜单第 6 项，写 `sysctl.d` 持久化，重启仍生效 |
+| **依赖自动装** | 裸机 Alpine 直接跑，自动补 curl / openssl / tar，缺什么装什么 |
 | **隔离共存** | 服务名 `sb-onekey`、目录 `/etc/sb-onekey`、二进制 `/usr/local/bin/sb-onekey`，不碰任何第三方安装 |
 | **自动校验** | 生成配置后跑 `sing-box check`，校验不过直接退出，不会留半残配置 |
 
@@ -23,87 +23,78 @@
 
 ## 快速开始
 
-### 方式 1：全交互（推荐首次使用）
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh
 ```
 
-首次运行会依次问：**协议类型 → 端口 → SNI 域名 → 节点名称**。
+首次运行会依次问：**协议类型 → 端口 → SNI 域名 → 节点名称**，装完打印分享链接。
 
-装好之后再跑同一条命令，**不会再报"已安装过"，而是直接显示当前状态**（协议 / 端口 / 监听 / 链接），可以当"查看"用。
+装好之后，**直接敲 `sb`** 就能调出菜单。
 
 > 用 `curl -fsSL` 而不是 `wget -qO-`：`wget` 失败时会把错误页灌给 `sh`，看到一堆 `syntax error`；`curl -f` 失败直接不输出。
-
-### 方式 2：只装一种协议
-
-```sh
-# 只装 vless-reality
-PROTOCOLS=vless VLESS_PORT=65005 sh sing-box-onekey.sh
-
-# 只装 hysteria2
-PROTOCOLS=hy2 HY2_PORT=65006 sh sing-box-onekey.sh
-```
-
-### 方式 3：全参数非交互（适合批量部署）
-
-```sh
-PROTOCOLS=vless,hy2 \
-VLESS_PORT=65005 HY2_PORT=65006 \
-SNI=www.icloud.com NODE_NAME=hk-node-1 \
-sh sing-box-onekey.sh
-```
-
----
-
-## 子命令
-
-安装时会把脚本自身装成命令 **`sbctl`**（`/usr/local/bin/sbctl`），所以装完之后：
-
-```sh
-sbctl             # 不带参数:已装 = 看状态,未装 = 开始安装
-sbctl info        # 查看已装协议 / 端口 / 监听状态 / 服务状态 / 分享链接
-sbctl status      # 同 info
-sbctl edit        # 交互式编辑(推荐)
-sbctl edit SNI=www.nvidia.com VLESS_PORT=65010   # 非交互编辑
-sbctl remove      # 删节点(释放端口),保留 sbctl 命令,以后可再 install
-sbctl uninstall   # 彻底卸载(节点 + sbctl 命令一起删)
-sbctl help        # 帮助
-```
-
-**`remove` 和 `uninstall` 的区别**（别用错）：
-
-| 命令 | 删节点 | 删 `sbctl` 命令 | 以后还能用 sbctl 吗 |
-|---|---|---|---|
-| `sbctl remove` | ✅ | ❌ | ✅ 能，直接 `sbctl install` 重装 |
-| `sbctl uninstall` | ✅ | ✅ | ❌ 不能，`sbctl: not found` |
-
-> 只想「把这个节点拆掉、换个端口重装」→ 用 `remove`。想把机器恢复成完全没装过的样子 → 用 `uninstall`。
-
-> **重跑脚本不会再报错**：不带参数时，已安装就显示当前状态，没装才开始装。所以下面这条可以随时执行，用来「看一眼现在什么情况」：
 >
-> ```sh
-> curl -fsSL https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh
-> ```
-
-没装之前（或 `curl | sh` 中途失败）仍可用脚本原名：
-
-```sh
-sh sing-box-onekey.sh              # 不带参数:已装看状态 / 未装安装
-sh sing-box-onekey.sh info         # 查看
-sh sing-box-onekey.sh edit         # 编辑
-sh sing-box-onekey.sh uninstall    # 卸载
-```
-
-> ⚠️ `/usr/local/bin/sb-onekey` 是 **sing-box 二进制**，不是本脚本；脚本的入口是 `sbctl`。两者刻意分开，避免把二进制覆盖掉。
+> **裸机没装 curl 也能跑**：`wget -qO- <url> | sh`（wget 是 busybox 自带的），脚本会自己 `apk add curl`。
 
 ---
 
-## 查看当前状态：`info`
+## 交互菜单
 
 ```sh
-sbctl info
+sb
 ```
+
+```
+================================================================
+ sing-box-onekey  v1.7
+ 系统: Alpine 3.23.6 / 内核 6.18.57-0-virt / x86_64
+ IP  : 203.0.113.10 (香港)
+ 服务: 运行中   协议: vless-reality + hysteria2
+ 端口: 65005/TCP(监听中)  65006/UDP(监听中)
+================================================================
+
+ 1 . 查看节点信息 / 分享链接       (sb -n)
+ 2 . 修改节点配置                 (sb -e)
+ 3 . 增加 / 删除协议              (sb -p)
+ 4 . 重启服务                     (sb -s)
+ 5 . 升级 sing-box                (sb -v)
+ 6 . 开启 BBR 加速                (sb -b)
+ 7 . 删除节点(保留 sb 命令)       (sb -r)
+ 8 . 彻底卸载(连 sb 一起删)       (sb -u)
+ 0 . 退出
+
+请选择:
+```
+
+没装节点时菜单只有三项：`1 安装 / 2 帮助 / 0 退出`。
+
+---
+
+## 快捷参数
+
+不想进菜单就敲参数，效果一样：
+
+| 命令 | 作用 |
+|---|---|
+| `sb` | 交互菜单 |
+| `sb -n` | 查看节点信息（协议/端口/监听/服务/链接） |
+| `sb -e` | 交互式修改配置 |
+| `sb -e SNI=www.nvidia.com VLESS_PORT=65010` | 非交互修改 |
+| `sb -p` | 增加 / 删除协议（仅 vless / 仅 hy2 / 两个都开） |
+| `sb -s` | 重启服务 |
+| `sb -v` | 检查并升级 sing-box |
+| `sb -b` | 开启 BBR 加速 |
+| `sb -i` | 安装节点（已装会拒绝，需先 `sb -r`） |
+| `sb -r` | 删除节点，**保留 `sb` 命令**，以后可再 `sb -i` |
+| `sb -u` | 彻底卸载（节点 + `sb` 命令一起删） |
+| `sb -h` | 帮助 |
+
+长参数同样可用：`--info` / `--edit` / `--protocol` / `--restart` / `--upgrade` / `--bbr` / `--install` / `--remove` / `--uninstall` / `--help`。
+
+> `/usr/local/bin/sb-onekey` 是 **sing-box 二进制**，不是本脚本；脚本入口是 `/usr/local/bin/sb`（另建 `sbctl` 软链兼容旧名）。两者刻意分开，避免把二进制覆盖掉。
+
+---
+
+## 查看当前状态：`sb -n`
 
 ```
 ========== 当前状态 ==========
@@ -132,8 +123,6 @@ hysteria2://<PASS>@203.0.113.10:65006?...#hk-node-1%20hy2
 - `未监听` = 服务起来了但端口没开（配置/权限问题）
 - `无法判断` = 读不到 `/proc/net/*`（极少见）
 
-> 看到「服务运行中」但端口「未监听」，说明进程活着但 inbound 没绑上，先看 `/var/log/sb-onekey.log`。
-
 ---
 
 ## 协议选择
@@ -156,15 +145,15 @@ hysteria2://<PASS>@203.0.113.10:65006?...#hk-node-1%20hy2
 | `PROTOCOLS=hy2` | 仅 hysteria2 |
 | `PROTOCOLS=vless,hy2` | 两个都装 |
 
-> 非交互环境（无 TTY）下不指定 `PROTOCOLS` 时，默认装两个，并打印提示。
+非交互示例：
+
+```sh
+PROTOCOLS=both VLESS_PORT=65005 HY2_PORT=65006 NODE_NAME=hk-node-1 sb -i
+```
 
 ---
 
-## 装完再改：`edit`
-
-```sh
-sbctl edit
-```
+## 装完再改：`sb -e`
 
 ```
 ========== 当前配置 ==========
@@ -194,14 +183,12 @@ sbctl edit
 ### 非交互编辑
 
 ```sh
-sbctl edit NODE_NAME=hk-node-2
-sbctl edit SNI=www.nvidia.com
-sbctl edit VLESS_PORT=65010
-sbctl edit ENABLE_HY2=1 HY2_PORT=65011   # 补装 hy2
-sbctl edit ENABLE_VLESS=0                # 停用 vless,只留 hy2
+sb -e NODE_NAME=hk-node-2
+sb -e SNI=www.nvidia.com
+sb -e VLESS_PORT=65010
+sb -e ENABLE_HY2=1 HY2_PORT=65011   # 补装 hy2
+sb -e ENABLE_VLESS=0                # 停用 vless,只留 hy2
 ```
-
-支持的字段：
 
 | 字段 | 说明 |
 |---|---|
@@ -220,11 +207,65 @@ sbctl edit ENABLE_VLESS=0                # 停用 vless,只留 hy2
 
 ---
 
+## 一键 BBR：`sb -b`
+
+```sh
+sb -b
+```
+
+```
+[INFO] 当前: 拥塞控制=cubic  队列调度=fq
+[OK] BBR 已开启: 拥塞控制=bbr  队列调度=fq
+[INFO] 已写入 /etc/sysctl.d/99-bbr.conf,重启后自动生效
+```
+
+做的事：
+
+1. 读当前拥塞控制算法，**已经是 `bbr` 就直接返回**，不重复折腾
+2. `modprobe tcp_bbr`，并检查内核是否真的支持（不支持会报出可用算法列表）
+3. 写 `/etc/sysctl.d/99-bbr.conf`：
+   ```
+   net.core.default_qdisc=fq
+   net.ipv4.tcp_congestion_control=bbr
+   ```
+4. `sysctl -p` 立即生效
+5. `rc-update add sysctl boot`，保证重启后自动加载
+
+> 只改拥塞控制算法和队列调度，不动节点配置，随时可回退（`sysctl -w net.ipv4.tcp_congestion_control=cubic`）。
+
+---
+
+## 依赖说明
+
+脚本只依赖三样，缺了会**自动 `apk add`**：
+
+| 依赖 | 用途 | 说明 |
+|---|---|---|
+| `curl` | 下载 sing-box / 查 IP | 裸机没有时脚本自己装 |
+| `openssl` | 生成 hy2 自签证书、算 pinSHA256 | |
+| `tar` | 解压 sing-box 发布包 | |
+
+已存在则跳过安装，不会每次 `apk update` 折腾。
+
+`apk add` 失败时会打印排查指引（源 / 网络 / 磁盘），而不是丢一句「安装失败」：
+
+```
+[错误] 依赖安装失败。请依次检查:
+  1) Alpine 源是否可用: cat /etc/apk/repositories
+  2) 网络/DNS 是否通:   ping -c2 dl-cdn.alpinelinux.org
+  3) 磁盘是否满:        df -h /
+  手动补装: apk add curl openssl tar
+```
+
+> **必须能访问 Alpine 官方源**。如果机器源被换成了内网/失效镜像，`apk add` 会失败 —— 脚本不会自动改你的 `repositories`。
+
+---
+
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `PROTOCOLS` | 交互询问 | `vless` / `hy2` / `vless,hy2` |
+| `PROTOCOLS` | 交互询问 | `vless` / `hy2` / `vless,hy2` / `both` |
 | `VLESS_PORT` | 必填 | vless-reality 监听端口 |
 | `HY2_PORT` | 必填 | hysteria2 监听端口 |
 | `SNI` | `www.icloud.com` | 伪装域名（reality 握手目标 / hy2 证书 CN） |
@@ -242,10 +283,43 @@ sbctl edit ENABLE_VLESS=0                # 停用 vless,只留 hy2
 | 服务名 | `sb-onekey` | `sing-box` |
 | 配置目录 | `/etc/sb-onekey` | `/etc/sing-box` |
 | 二进制 | `/usr/local/bin/sb-onekey` | `/etc/sing-box/sing-box` |
+| 命令入口 | `/usr/local/bin/sb` | `sb` |
 | 日志 | `/var/log/sb-onekey.log` | 各自的 |
-| 命令入口 | `/usr/local/bin/sbctl` | 各自的 |
 
-所以同一台机器上可以两套并存，互不干扰。`uninstall` 也只删自己的。
+服务、目录、二进制完全隔离，`sb -u` 也只删自己的。
+
+> ⚠️ **命令名 `sb` 与 fscarmen 脚本相同**。同机装两套会互相覆盖 `sb` —— 后装的占 `sb`。本脚本另建了 `sbctl` 软链，被覆盖时仍可用 `sbctl` 调本脚本。
+
+---
+
+## 删除节点 / 卸载
+
+**只删节点，保留命令**（换端口重装前用这个）：
+
+```sh
+sb -r
+```
+
+删除：服务、`/etc/sb-onekey`、`/usr/local/bin/sb-onekey`、`/etc/init.d/sb-onekey`、日志。
+保留：`/usr/local/bin/sb`，所以随时 `sb -i` 重装。
+
+**彻底卸载**（连命令一起清掉）：
+
+```sh
+sb -u
+```
+
+删除：上面全部 + `/usr/local/bin/sb` + `sbctl` 软链。删完 `sb` 就 not found 了。
+
+> 两者都**不影响** fscarmen 等其他 sing-box 安装。
+>
+> 如果 `sb` 已经没了又想装回来（不装节点），跑：
+>
+> ```sh
+> curl -fsSL https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh -s -- -h
+> ```
+>
+> `-h` 只装命令、不装节点。
 
 ---
 
@@ -257,69 +331,20 @@ A：不支持。本脚本专为 Alpine + OpenRC 设计（用 `rc-service` / `rc-
 **Q：端口要填多少？**
 A：**必须是你云厂商安全组已放行的端口**。脚本会检查本机端口占用，但检查不了云厂商安全组——放行是另一回事。
 
-**Q：重跑脚本提示「已安装过」怎么办？**
-A：v1.4 及更早会这样。v1.5 起不带参数重跑直接显示状态；如果你手上是旧版，改用 `sbctl info`（或 `sh sing-box-onekey.sh info`）查看，不用卸载重装。
-
 **Q：改了 SNI 之后节点连不上？**
-A：hy2 的 `pinSHA256` 证书指纹变了。重新跑 `sbctl info` 复制新链接，旧链接里的指纹已失效。
+A：hy2 的 `pinSHA256` 证书指纹变了。重新跑 `sb -n` 复制新链接，旧链接里的指纹已失效。
 
-**Q：提示 `sbctl: not found`？**
-A：v1.3 及更早版本装的没有这个命令。**不用卸载重装**——随便跑一次 `sh sing-box-onekey.sh info`（或 `edit`），脚本会自动把自己补装成 `sbctl`。
+**Q：提示 `sb: not found`？**
+A：说明 `sb` 命令被删了（用了 `sb -u` 或从来没装）。**不用重装节点**——跑一次 `curl -fsSL ... | sh -s -- -h` 就能把命令装回来。
 
-**Q：`/usr/local/bin/sb-onekey` 和 `sbctl` 有什么区别？**
-A：前者是 **sing-box 二进制**（服务实际跑的程序），后者是**本脚本**的入口。两者故意分开命名，避免脚本把二进制覆盖掉。
+**Q：`/usr/local/bin/sb-onekey` 和 `sb` 有什么区别？**
+A：前者是 **sing-box 二进制**（服务实际跑的程序），后者是**本脚本**的菜单入口。两者故意分开命名。
 
-**Q：`info` 显示「服务运行中」但端口「未监听」？**
-A：进程活着但 inbound 没绑上。先看 `tail -30 /var/log/sb-onekey.log`，常见原因是端口被别的进程抢了，或配置里 listen 地址不对。改端口用 `sbctl edit VLESS_PORT=xxxxx`。
+**Q：`sb -n` 显示「服务运行中」但端口「未监听」？**
+A：进程活着但 inbound 没绑上。先看 `tail -30 /var/log/sb-onekey.log`，常见原因是端口被别的进程抢了，或配置里 listen 地址不对。改端口用 `sb -e`。
 
 **Q：能装两个实例吗？**
-A：不能。本脚本是单实例设计（固定目录 + 固定服务名）。要多个节点请用不同机器，或用 fscarmen 那种多配置方案。
-
-**Q：`edit` 之后要手动重启服务吗？**
-A：不用，脚本会自动重启并校验状态。如果重启失败会报错并提示看 `/var/log/sb-onekey.log`。
-
----
-
-## 输出示例
-
-```
-========== 分享链接 ==========
-vless://<UUID>@<IP>:65005?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.icloud.com&fp=chrome&pbk=<PUBKEY>&sid=<SID>&type=tcp&headerType=none#<节点名>%20reality
-
-hysteria2://<PASS>@<IP>:65006?sni=www.icloud.com&insecure=1&pinSHA256=<指纹>#<节点名>%20hy2
-==============================
-```
-
----
-
-## 删除节点 / 卸载
-
-**只删节点，保留命令**（推荐，换端口重装前用这个）：
-
-```sh
-sbctl remove
-```
-
-删除：服务、`/etc/sb-onekey`、`/usr/local/bin/sb-onekey`、`/etc/init.d/sb-onekey`、日志。
-保留：`/usr/local/bin/sbctl`，所以随时 `sbctl install` 重装。
-
-**彻底卸载**（连命令一起清掉）：
-
-```sh
-sbctl uninstall
-```
-
-删除：上面全部 + `/usr/local/bin/sbctl`。删完 `sbctl` 就 not found 了。
-
-> 两者都**不影响** fscarmen 等其他 sing-box 安装。
->
-> 如果 `sbctl` 已经没了又想装回来（不装节点），跑：
->
-> ```sh
-> curl -fsSL https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh -s -- help
-> ```
->
-> `help` 子命令只装命令、不装节点。
+A：不能。本脚本是单实例设计（固定目录 + 固定服务名）。要多个节点请用不同机器。
 
 ---
 

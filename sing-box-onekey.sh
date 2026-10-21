@@ -4,27 +4,28 @@
 #  (专用 Alpine,OpenRC;与 fscarmen 等第三方脚本完全隔离共存)
 #
 #  用法:
-#    wget -qO- https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh
+#    curl -fsSL https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh | sh
 #    sh sing-box-onekey.sh              # 安装(交互选协议/端口/域名/节点名)
 #    PROTOCOLS=vless sh sing-box-onekey.sh          # 只装 vless-reality
 #    PROTOCOLS=hy2 sh sing-box-onekey.sh            # 只装 hysteria2
 #    PROTOCOLS=vless,hy2 VLESS_PORT=6501 HY2_PORT=6502 sh ... # 全参数非交互
-#    sh sing-box-onekey.sh info         # 查看已装协议/端口/状态/分享链接
-#    sh sing-box-onekey.sh edit         # 交互式编辑(改端口/SNI/节点名/重置密钥/启停协议)
-#    sh sing-box-onekey.sh edit SNI=www.nvidia.com   # 非交互编辑
-#    sh sing-box-onekey.sh uninstall    # 彻底卸载(只清自己,不动第三方)
 #
-#  安装完成后脚本自身会被装成命令 sbctl,以后直接:
-#    sbctl info | sbctl edit | sbctl uninstall
+#  安装完成后脚本自身会被装成命令 sb,直接敲 sb 出交互菜单:
+#    sb                  # 交互菜单(1看 2改 3协议 4重启 5升级 6删节点 7卸载)
+#    sb -n  查看节点信息      sb -e  修改节点配置      sb -p  增减协议
+#    sb -s  重启服务          sb -v  升级 sing-box     sb -b  开启 BBR
+#    sb -r  删除节点(留命令)  sb -u  彻底卸载          sb -h  帮助
+#    sb -e SNI=www.nvidia.com VLESS_PORT=65010    # 非交互编辑
 # =============================================================
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="1.6"                      # 本脚本自身版本(用于判断 sbctl 是否需要更新)
+SCRIPT_VER="1.7"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
-SELF_BIN="/usr/local/bin/sbctl"       # 本脚本自装的命令入口
+SELF_BIN="/usr/local/bin/sb"          # 本脚本自装的命令入口(菜单)
+SELF_BIN_ALT="/usr/local/bin/sbctl"   # 兼容旧名(软链到 sb)
 SELF_URL="https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh"
 PROTOCOLS="${PROTOCOLS:-}"
 VLESS_PORT="${VLESS_PORT:-}"
@@ -44,18 +45,38 @@ die() { printf "${RED}[错误]${NC} %s\n" "$1" >&2; exit 1; }
 # ---------- 基础检查 ----------
 [ "$(id -u)" = "0" ] || die "请用 root 运行"
 
-detect_os() {
+# 静默环境检查(菜单/内部调用用,不打 INFO)
+check_env() {
     [ -f /etc/alpine-release ] || die "本脚本仅支持 Alpine 系统(检测到非 Alpine)"
     command -v rc-service >/dev/null 2>&1 || die "未检测到 OpenRC(rc-service),请确认系统完整"
+}
+
+detect_os() {
+    check_env
     info "系统: Alpine $(cat /etc/alpine-release) / init: OpenRC"
 }
 
 install_deps() {
-    info "检查并安装依赖 curl openssl tar..."
-    apk update >/dev/null 2>&1 || true
-    apk add --no-cache curl openssl tar >/dev/null
-    command -v curl >/dev/null 2>&1 || die "curl 安装失败"
-    command -v openssl >/dev/null 2>&1 || die "openssl 安装失败"
+    _need=""
+    for _c in curl openssl tar; do
+        command -v "$_c" >/dev/null 2>&1 || _need="$_need $_c"
+    done
+    if [ -z "$_need" ]; then
+        ok "依赖已存在(curl/openssl/tar),无需安装"
+        return 0
+    fi
+    info "缺少:$_need —— 开始安装..."
+    apk update >/dev/null 2>&1 || warn "apk update 失败(源可能不可达),继续尝试安装"
+    if ! apk add --no-cache curl openssl tar >/dev/null 2>&1; then
+        die "依赖安装失败。请依次检查:
+  1) Alpine 源是否可用: cat /etc/apk/repositories
+  2) 网络/DNS 是否通:   ping -c2 dl-cdn.alpinelinux.org
+  3) 磁盘是否满:        df -h /
+  手动补装: apk add curl openssl tar"
+    fi
+    for _c in curl openssl tar; do
+        command -v "$_c" >/dev/null 2>&1 || die "$_c 安装后仍不可用,请手动执行: apk add $_c"
+    done
     ok "依赖就绪"
 }
 
@@ -87,7 +108,7 @@ ask_port() {  # $1=变量名 $2=提示  端口必填,无默认
     _v="$(env_val "$1")"
     if [ -z "$_v" ]; then
         printf '%s' "$2"
-        _v="$(tty_read)" || die "当前为非交互环境,请用环境变量指定端口: $1=端口号 sbctl install"
+        _v="$(tty_read)" || die "当前为非交互环境,请用环境变量指定端口: $1=端口号 sb -i"
     fi
     case "$_v" in ''|*[!0-9]*) die "端口必须是纯数字,收到: $_v" ;; esac
     [ "$_v" -ge 1 ] && [ "$_v" -le 65535 ] || die "端口范围 1-65535"
@@ -366,13 +387,64 @@ port_state() {  # $1=端口 $2=tcp|udp  输出带颜色的监听状态
     esac
 }
 
-# 把脚本自身装成 sbctl,装完就不用再记 sing-box-onekey.sh 放哪了
+# ---------- 系统信息(菜单横幅用) ----------
+sys_desc() {
+    printf '%s / 内核 %s / %s' "Alpine $(cat /etc/alpine-release 2>/dev/null)" "$(uname -r)" "$(uname -m)"
+}
+
+# 查 IP 归属地,结果缓存在 _REGION(同一次运行内只查一次)
+region_of() {  # $1=ip
+    [ -n "${_REGION:-}" ] && return 0
+    _REGION="$(curl -fsSL --max-time 5 "http://ip-api.com/line/${1}?fields=country&lang=zh-CN" 2>/dev/null | head -1)"
+    [ -n "$_REGION" ] || _REGION="$(curl -fsSL --max-time 5 "https://ipinfo.io/${1}/country" 2>/dev/null | head -1)"
+    [ -n "$_REGION" ] || _REGION="未知地区"
+}
+
+show_banner() {
+    printf "${CYN}================================================================${NC}\n"
+    printf " ${GRN}sing-box-onekey${NC}  v%s\n" "$SCRIPT_VER"
+    printf " 系统: %s\n" "$(sys_desc)"
+    if [ -z "${_IP_CACHE:-}" ]; then
+        _IP_CACHE="$(get_ip 2>/dev/null)" || _IP_CACHE=""
+    fi
+    if [ -n "$_IP_CACHE" ]; then
+        region_of "$_IP_CACHE"
+        printf " IP  : %s (%s)\n" "$_IP_CACHE" "$_REGION"
+    else
+        printf " IP  : ${YLW}获取失败${NC}\n"
+    fi
+    if [ -f "$PARAMS" ]; then
+        load_params
+        printf " 服务: "
+        if svc_status; then printf "${GRN}运行中${NC}"; else printf "${RED}未运行${NC}"; fi
+        printf "   协议: "
+        _any=""
+        if [ "$ENABLE_VLESS" = "1" ]; then printf 'vless-reality'; _any=1; fi
+        if [ "$ENABLE_HY2" = "1" ]; then [ -n "$_any" ] && printf ' + '; printf 'hysteria2'; fi
+        printf "\n 端口: "
+        _any=""
+        if [ "$ENABLE_VLESS" = "1" ]; then
+            printf '%s/TCP(%s)' "$VLESS_PORT" "$(port_state "$VLESS_PORT" tcp)"; _any=1
+        fi
+        if [ "$ENABLE_HY2" = "1" ]; then
+            [ -n "$_any" ] && printf '  '
+            printf '%s/UDP(%s)' "$HY2_PORT" "$(port_state "$HY2_PORT" udp)"
+        fi
+        printf "\n"
+    else
+        printf " 状态: ${YLW}未安装${NC}\n"
+    fi
+    printf "${CYN}================================================================${NC}\n"
+}
+
+# 把脚本自身装成 sb(菜单入口),并建 sbctl 兼容软链
 install_self() {
     # 已装且版本一致 => 什么都不做(避免每次 info 都白下载一遍)
     if [ -x "$SELF_BIN" ] && grep -q "^SCRIPT_VER=\"$SCRIPT_VER\"" "$SELF_BIN" 2>/dev/null; then
+        _ensure_alt_link
         return 0
     fi
-    _tmp="/tmp/.sbctl.$$"
+    _tmp="/tmp/.sb-install.$$"
     _src=""
     # curl|sh 场景下 $0 是 sh 或 /dev/fd/63,不可用 => 回源下载
     if [ -f "$0" ] && grep -q "sing-box-onekey" "$0" 2>/dev/null; then
@@ -381,19 +453,26 @@ install_self() {
     if [ -z "$_src" ]; then
         if ! curl -fsSL --max-time 25 "$SELF_URL" -o "$_tmp" 2>/dev/null; then
             rm -f "$_tmp"
-            warn "未能安装 sbctl(下载失败);仍可用 sh sing-box-onekey.sh info 查看"
+            warn "未能安装 sb 命令(下载失败);仍可用 sh sing-box-onekey.sh 运行"
             return 0
         fi
     fi
     if ! grep -q "sing-box-onekey" "$_tmp" 2>/dev/null; then
         rm -f "$_tmp"
-        warn "sbctl 内容校验失败,已跳过(不影响节点)"
+        warn "sb 内容校验失败,已跳过(不影响节点)"
         return 0
     fi
     chmod 755 "$_tmp"
     # 用 mv 而非 install:覆盖正在执行的文件时,install 会报 Text file busy
-    mv -f "$_tmp" "$SELF_BIN" 2>/dev/null || { rm -f "$_tmp"; warn "sbctl 安装失败(权限?)"; return 0; }
-    ok "命令已安装: $SELF_BIN  (v$SCRIPT_VER,以后直接 sbctl info / sbctl edit)"
+    mv -f "$_tmp" "$SELF_BIN" 2>/dev/null || { rm -f "$_tmp"; warn "sb 安装失败(权限?)"; return 0; }
+    _ensure_alt_link
+    ok "命令已安装: $SELF_BIN  (v$SCRIPT_VER,直接敲 sb 出菜单)"
+}
+
+# sbctl 只是兼容旧名的软链,删了也无所谓
+_ensure_alt_link() {
+    [ -e "$SELF_BIN_ALT" ] && [ ! -L "$SELF_BIN_ALT" ] && rm -f "$SELF_BIN_ALT" 2>/dev/null
+    ln -sf sb "$SELF_BIN_ALT" 2>/dev/null || true
 }
 
 show_links() {
@@ -408,7 +487,7 @@ show_links() {
     fi
     if [ "${ENABLE_HY2:-1}" = "1" ]; then
         _fp="$(openssl x509 -in "$CONF_DIR/hy2.crt" -outform der 2>/dev/null | openssl dgst -sha256 -hex | awk '{print $2}' | tr -d ':' | tr 'a-z' 'A-Z')"
-        [ -n "$_fp" ] || die "hy2 证书缺失或损坏,请执行: sbctl edit 重新生成证书"
+        [ -n "$_fp" ] || die "hy2 证书缺失或损坏,请执行: sb -e 重新生成证书"
         _n2="$(urlencode "${NODE_NAME} hy2")"
         echo "hysteria2://${HY2_PASS}@${_ip}:${HY2_PORT}?sni=${SNI}&insecure=1&pinSHA256=${_fp}#${_n2}"
         echo ""
@@ -439,7 +518,7 @@ detect_existing() {
 
 # ---------- 安装 ----------
 do_install() {
-    [ -f "$PARAMS" ] && die "已安装过(参数在 $PARAMS)。看状态: sbctl info(或不带参数重跑本脚本);改配置: sbctl edit;重装请先: sbctl uninstall"
+    [ -f "$PARAMS" ] && die "已安装过(参数在 $PARAMS)。看状态: sb -n;改配置: sb -e;重装请先: sb -r"
     detect_os
     detect_existing
     install_deps
@@ -486,12 +565,13 @@ do_install() {
     [ "$ENABLE_HY2" = "1" ]   && _fw="${_fw:+$_fw + }UDP $HY2_PORT"
     warn "记得在云厂商安全组/防火墙放行: $_fw"
     show_links
+    printf "\n  ${GRN}装好了${NC} —— 以后直接敲 ${CYN}sb${NC} 出菜单,${CYN}sb -h${NC} 看快捷参数\n\n"
 }
 
 # ---------- 查看 ----------
 do_info() {
     detect_os
-    [ -f "$PARAMS" ] || die "未安装(找不到 $PARAMS)。安装: sbctl install"
+    [ -f "$PARAMS" ] || die "未安装(找不到 $PARAMS)。安装: sb -i"
     load_params
     _ip="$(get_ip)"
 
@@ -512,7 +592,7 @@ do_info() {
     _any=""
     if [ "$ENABLE_VLESS" = "1" ]; then printf 'vless-reality'; _any=1; fi
     if [ "$ENABLE_HY2" = "1" ]; then [ -n "$_any" ] && printf ' + '; printf 'hysteria2'; _any=1; fi
-    [ -n "$_any" ] || printf "${RED}无(配置异常,执行 sbctl edit 启用协议)${NC}"
+    [ -n "$_any" ] || printf "${RED}无(配置异常,执行 sb -p 启用协议)${NC}"
     printf '\n'
     if [ "$ENABLE_VLESS" = "1" ]; then
         printf '    vless   : 端口 %s/TCP  %s\n' "$VLESS_PORT" "$(port_state "$VLESS_PORT" tcp)"
@@ -522,7 +602,7 @@ do_info() {
     fi
     printf "${CYN}==============================${NC}\n"
     show_links
-    printf "\n  改配置: ${CYN}sbctl edit${NC}    卸载: ${CYN}sbctl uninstall${NC}    帮助: ${CYN}sbctl help${NC}\n\n"
+    printf "\n  改配置: ${CYN}sb -e${NC}    卸载: ${CYN}sb -u${NC}    菜单: ${CYN}sb${NC}    帮助: ${CYN}sb -h${NC}\n\n"
 }
 
 # ---------- 编辑 ----------
@@ -584,7 +664,7 @@ do_edit() {
     detect_os
     load_params
 
-    # ---- 非交互模式: sbctl edit SNI=xxx VLESS_PORT=6501 ----
+    # ---- 非交互模式: sb -e SNI=xxx VLESS_PORT=6501 ----
     # 注意:必须写 `shift || true`,不能写 `shift 2>/dev/null`
     # (busybox ash 会把 `2` 当成 shift 的参数,直接移掉两个位置参数)
     shift || true
@@ -619,7 +699,7 @@ do_edit() {
     fi
 
     # ---- 交互模式 ----
-    has_tty || die "非交互环境请用: sbctl edit SNI=www.nvidia.com VLESS_PORT=6501"
+    has_tty || die "非交互环境请用: sb -e SNI=www.nvidia.com VLESS_PORT=6501"
     while :; do
         show_current
         printf '\n修改项:\n'
@@ -692,7 +772,7 @@ do_edit() {
     done
 }
 
-# ---------- 删除节点(保留 sbctl 命令,方便以后重装) ----------
+# ---------- 删除节点(保留 sb 命令,方便以后重装) ----------
 do_remove() {
     detect_os
     if [ ! -f "$PARAMS" ] && [ ! -x "$BIN" ]; then
@@ -703,33 +783,165 @@ do_remove() {
     rc-update del sb-onekey default >/dev/null 2>&1 || true
     rm -rf "$CONF_DIR" "$BIN" /var/log/sb-onekey.log /etc/init.d/sb-onekey
     ok "节点已删除,端口已释放"
-    ok "sbctl 命令保留在 $SELF_BIN —— 随时可 sbctl install 重装"
+    ok "sb 命令保留在 $SELF_BIN —— 随时可 sb -i 重装"
 }
 
-# ---------- 彻底卸载(节点 + sbctl 命令) ----------
+# ---------- 彻底卸载(节点 + sb 命令) ----------
 do_uninstall() {
     detect_os
     rc-service sb-onekey stop >/dev/null 2>&1 || true
     rc-update del sb-onekey default >/dev/null 2>&1 || true
-    rm -rf "$CONF_DIR" "$BIN" /var/log/sb-onekey.log /etc/init.d/sb-onekey "$SELF_BIN"
-    ok "已彻底卸载(节点 + sbctl 命令都已删除,不影响 fscarmen 等第三方安装)"
-    printf "  只想删节点、保留命令的话,下次用: %s\n" "sbctl remove"
+    rm -rf "$CONF_DIR" "$BIN" /var/log/sb-onekey.log /etc/init.d/sb-onekey "$SELF_BIN" "$SELF_BIN_ALT"
+    ok "已彻底卸载(节点 + sb 命令都已删除,不影响 fscarmen 等第三方安装)"
+    printf "  只想删节点、保留命令的话,下次用: %s\n" "sb -r"
+}
+
+# ---------- 重启 / 升级 / 协议切换 ----------
+do_restart() {
+    check_env
+    load_params
+    info "重启 sb-onekey..."
+    rc-service sb-onekey restart >/dev/null 2>&1
+    sleep 1
+    if svc_status; then ok "服务运行中"; else die "重启失败,查看: tail -30 /var/log/sb-onekey.log"; fi
+}
+
+do_upgrade() {
+    check_env
+    load_params
+    [ -x "$BIN" ] || die "sing-box 二进制缺失,建议先 sb -r 删除再 sb -i 重装"
+    _cur="$("$BIN" version 2>/dev/null | head -1 | awk '{print $3}')"
+    info "当前版本: v${_cur:-未知}"
+    _new="$(latest_version)"
+    info "最新版本: v$_new"
+    if [ "$_cur" = "$_new" ]; then
+        ok "已是最新,无需升级"
+        return 0
+    fi
+    printf '升级到 v%s ? [y/N]: ' "$_new"
+    _yn="$(tty_read)" || return 0
+    case "$_yn" in y|Y|yes|YES) ;; *) warn "已取消"; return 0 ;; esac
+    rc-service sb-onekey stop >/dev/null 2>&1 || true
+    SB_VERSION="$_new"
+    install_singbox
+    save_params
+    rc-service sb-onekey start >/dev/null 2>&1
+    sleep 1
+    if svc_status; then ok "升级完成,服务运行中"; else die "升级后启动失败,查看: tail -30 /var/log/sb-onekey.log"; fi
+}
+
+do_edit_protocols() {
+    check_env
+    load_params
+    toggle_protocols
+}
+
+# ---------- BBR 加速 ----------
+do_bbr() {
+    check_env
+    _cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+    _qd="$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+    info "当前: 拥塞控制=${_cc:-未知}  队列调度=${_qd:-未知}"
+    if [ "$_cc" = "bbr" ]; then
+        ok "BBR 已开启,无需操作"
+        return 0
+    fi
+    modprobe tcp_bbr 2>/dev/null || true
+    if ! grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then
+        die "当前内核不支持 BBR(可用算法: $(cat /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null))"
+    fi
+    mkdir -p /etc/sysctl.d
+    cat > /etc/sysctl.d/99-bbr.conf <<EOF
+# 由 sing-box-onekey 写入 ($(date +%F))
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+    sysctl -p /etc/sysctl.d/99-bbr.conf >/dev/null 2>&1 \
+        || sysctl -w net.core.default_qdisc=fq net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1
+    # Alpine: 让 sysctl 服务开机自动加载 /etc/sysctl.d
+    [ -f /etc/init.d/sysctl ] && rc-update add sysctl boot >/dev/null 2>&1
+    _cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)"
+    _qd="$(sysctl -n net.core.default_qdisc 2>/dev/null)"
+    if [ "$_cc" = "bbr" ]; then
+        ok "BBR 已开启: 拥塞控制=$_cc  队列调度=${_qd:-未设置}"
+        info "已写入 /etc/sysctl.d/99-bbr.conf,重启后自动生效"
+    else
+        die "开启失败,当前仍是 ${_cc:-未知}"
+    fi
+}
+
+# ---------- 主菜单 ----------
+do_menu() {
+    check_env
+    while :; do
+        clear 2>/dev/null || true
+        show_banner
+        if [ -f "$PARAMS" ]; then
+            cat <<EOF
+
+ 1 . 查看节点信息 / 分享链接       (sb -n)
+ 2 . 修改节点配置                 (sb -e)
+ 3 . 增加 / 删除协议              (sb -p)
+ 4 . 重启服务                     (sb -s)
+ 5 . 升级 sing-box                (sb -v)
+ 6 . 开启 BBR 加速                (sb -b)
+ 7 . 删除节点(保留 sb 命令)       (sb -r)
+ 8 . 彻底卸载(连 sb 一起删)       (sb -u)
+ 0 . 退出
+
+EOF
+        else
+            cat <<EOF
+
+ 1 . 安装节点                     (sb -i)
+ 2 . 帮助                         (sb -h)
+ 0 . 退出
+
+EOF
+        fi
+        printf '请选择: '
+        _c="$(tty_read)" || return 0
+        case "$_c" in
+            1) if [ -f "$PARAMS" ]; then do_info; else do_install; fi ;;
+            2) if [ -f "$PARAMS" ]; then do_edit; else do_help; fi ;;
+            3) if [ -f "$PARAMS" ]; then do_edit_protocols; else warn "未安装"; fi ;;
+            4) if [ -f "$PARAMS" ]; then do_restart; else warn "未安装"; fi ;;
+            5) if [ -f "$PARAMS" ]; then do_upgrade; else warn "未安装"; fi ;;
+            6) do_bbr ;;
+            7) if [ -f "$PARAMS" ]; then do_remove; else warn "未安装"; fi ;;
+            8) do_uninstall; return 0 ;;
+            0|q|Q|exit) return 0 ;;
+            '') return 0 ;;
+            *) warn "无效选择: $_c" ;;
+        esac
+        printf '\n按回车返回菜单...'
+        tty_read >/dev/null || return 0
+    done
 }
 
 do_help() {
     printf "\n${CYN}sing-box-onekey — Alpine 一键搭建 vless-reality / hysteria2${NC}\n"
     cat <<EOF
 
-用法:  sbctl <子命令>        (安装后可用;或 sh sing-box-onekey.sh <子命令>)
+用法:  sb                直接敲 = 出交互菜单(推荐)
+       sb <参数>         或按下面短参数调用
 
-  install      安装(交互选协议/端口/SNI/节点名);已安装会拒绝,需先 remove
-  info         查看已装协议、端口、监听状态、服务状态与分享链接
-  status       info 的别名
-  edit         交互式编辑(改节点名/SNI/端口/重置凭据/启停协议)
-  edit K=V...  非交互编辑,例: sbctl edit VLESS_PORT=65006 ENABLE_HY2=1
-  remove       删除节点(释放端口),保留 sbctl 命令,以后可再 sbctl install
-  uninstall    彻底卸载(节点 + sbctl 命令一起删,删完 sbctl 就没了)
-  help         显示本帮助
+  菜单项               短参数    说明
+  ------------------   -------   --------------------------------------------
+  查看节点信息         sb -n     协议/端口/监听状态/服务状态/分享链接
+  修改节点配置         sb -e     改节点名/SNI/端口/重置凭据/启停协议
+  增加 / 删除协议      sb -p     快速切换 仅vless / 仅hy2 / 两个都开
+  重启服务             sb -s     重启 sb-onekey 服务
+  升级 sing-box        sb -v     检查并升级到最新 release
+  开启 BBR 加速        sb -b     写 sysctl 并持久化(已是 BBR 则跳过)
+  安装节点             sb -i     已安装会拒绝,需先 sb -r
+  删除节点             sb -r     释放端口,保留 sb 命令,以后可再 sb -i
+  彻底卸载             sb -u     节点 + sb 命令一起删
+  帮助                 sb -h     显示本帮助
+
+  长参数也认: --info / --edit / --protocol / --restart / --upgrade / --bbr
+              --install / --remove / --uninstall / --help
+  非交互编辑:  sb -e VLESS_PORT=65006 ENABLE_HY2=1
 
 安装时可用的环境变量(非交互):
   PROTOCOLS=vless|hy2|both   选协议,默认交互询问(回车=both)
@@ -741,22 +953,36 @@ do_help() {
 EOF
 }
 
-# 老版本(≤v1.3)装的没有 sbctl。除 install/uninstall 外的子命令顺手补装一次,
-# 这样 `sh sing-box-onekey.sh info` 跑一下就自动有了 sbctl,不用卸载重装。
+# 老版本(≤v1.6)装的没有 sb 命令。除安装/卸载类参数外顺手补装一次,
+# 这样 `sh sing-box-onekey.sh info` 跑一下就自动有了 sb,不用卸载重装。
 case "${1:-}" in
-    install|uninstall|purge|remove|del|rm|delete) ;;
+    install|-i|--install|uninstall|-u|--uninstall|purge|remove|-r|--remove|del|rm|delete|bbr|-b|--bbr) ;;
     *) install_self ;;
 esac
 
-# 不带参数时的默认行为:已安装 => 看状态;未安装 => 安装
-# (v1.4 及更早默认走 install,已装会直接报"已安装过"然后退出,重跑脚本想看状态反被拒)
+# 参数分发
 case "${1:-}" in
-    "") if [ -f "$PARAMS" ]; then do_info; else do_install; fi ;;
-    install)                    do_install ;;
-    info|status|show)           do_info ;;
-    edit)                       do_edit "$@" ;;
-    remove|del|rm|delete)       do_remove ;;
-    uninstall|purge)            do_uninstall ;;
-    help|-h|--help)             do_help ;;
-    *) die "未知子命令: $1(可用: install|info|status|edit|remove|uninstall|help)" ;;
+    "")
+        if [ -f "$PARAMS" ]; then
+            # 已装节点:有终端进菜单,无终端只打状态
+            if has_tty; then do_menu; else do_info; fi
+        elif [ "$(readlink -f "$0" 2>/dev/null)" = "$(readlink -f "$SELF_BIN" 2>/dev/null)" ] && has_tty; then
+            # 敲的是已安装的 sb 命令但节点已删 => 出菜单(1安装/2帮助/0退出),别擅自开装
+            do_menu
+        else
+            # 首次运行脚本(curl|sh 或 sh xxx.sh) => 直接进安装流程
+            do_install
+        fi
+        ;;
+    -i|--install|install)                          do_install ;;
+    -n|--info|--status|info|status|show)           do_info ;;
+    -e|--edit|edit)                                do_edit "$@" ;;
+    -p|--protocol|protocol)                        do_edit_protocols ;;
+    -s|--restart|restart)                          do_restart ;;
+    -v|--upgrade|upgrade)                          do_upgrade ;;
+    -b|--bbr|bbr)                                  do_bbr ;;
+    -r|--remove|remove|del|rm|delete)              do_remove ;;
+    -u|--uninstall|uninstall|purge)                do_uninstall ;;
+    -h|--help|help)                                do_help ;;
+    *) die "未知参数: $1  (敲 sb -h 看帮助)" ;;
 esac
