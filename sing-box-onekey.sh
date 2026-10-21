@@ -20,7 +20,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="1.7"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="1.8"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -636,14 +636,40 @@ apply_edit() {  # $1=是否重签证书(1/0)
 }
 
 toggle_protocols() {
-    printf '\n选择协议组合:\n  1) 仅 vless-reality\n  2) 仅 hysteria2\n  3) 两个都启用\n请选择 [1/2/3]: '
+    # 先把当前状态摆出来,用户才知道"删"是删哪个
+    if [ "$ENABLE_VLESS" = "1" ]; then _vs="${GRN}已启用${NC} (端口 $VLESS_PORT/TCP)"
+    else _vs="${RED}已关闭${NC}"; fi
+    if [ "$ENABLE_HY2" = "1" ]; then _hs="${GRN}已启用${NC} (端口 $HY2_PORT/UDP)"
+    else _hs="${RED}已关闭${NC}"; fi
+
+    printf '\n当前协议:\n'
+    printf '  vless-reality : %b\n' "$_vs"
+    printf '  hysteria2     : %b\n' "$_hs"
+    printf '\n请选择:\n'
+    printf '  1) 删除 hysteria2      → 只留 vless-reality,释放 UDP 端口\n'
+    printf '  2) 删除 vless-reality  → 只留 hysteria2,释放 TCP 端口\n'
+    printf '  3) 两个都启用          → 缺的自动补上(需要时会问端口)\n'
+    printf '  0) 取消\n'
+    printf "  ${YLW}提示${NC}: 想连节点配置一起删掉,请选 7 / sb -r\n"
+    printf '请选择 [0-3]: '
+
     _v="$(tty_read)" || { warn "取消"; return 0; }
+    _nv="$ENABLE_VLESS"; _nh="$ENABLE_HY2"
     case "$_v" in
-        1) ENABLE_VLESS=1; ENABLE_HY2=0 ;;
-        2) ENABLE_VLESS=0; ENABLE_HY2=1 ;;
-        3) ENABLE_VLESS=1; ENABLE_HY2=1 ;;
-        *) warn "无效选择,已取消"; return 0 ;;
+        1) _nv=1; _nh=0 ;;
+        2) _nv=0; _nh=1 ;;
+        3) _nv=1; _nh=1 ;;
+        0|'') warn "已取消"; return 0 ;;
+        *) warn "无效选择: $_v,已取消"; return 0 ;;
     esac
+    if [ "$_nv" = "$ENABLE_VLESS" ] && [ "$_nh" = "$ENABLE_HY2" ]; then
+        ok "当前已是该状态,无需修改"; return 0
+    fi
+    ENABLE_VLESS="$_nv"; ENABLE_HY2="$_nh"
+    _del=""
+    [ "$ENABLE_VLESS" = "0" ] && _del="vless-reality"
+    [ "$ENABLE_HY2" = "0" ] && _del="${_del:+$_del + }hysteria2"
+
     if [ "$ENABLE_VLESS" = "1" ] && [ -z "${VLESS_PORT:-}" ]; then
         printf 'vless 端口: '
         VLESS_PORT="$(tty_read)"
@@ -658,6 +684,7 @@ toggle_protocols() {
         warn "两个端口不能相同,已取消"; return 0
     fi
     apply_edit 0
+    [ -n "$_del" ] && ok "已删除协议: $_del(对应端口已释放)"
 }
 
 do_edit() {
@@ -930,7 +957,7 @@ do_help() {
   ------------------   -------   --------------------------------------------
   查看节点信息         sb -n     协议/端口/监听状态/服务状态/分享链接
   修改节点配置         sb -e     改节点名/SNI/端口/重置凭据/启停协议
-  增加 / 删除协议      sb -p     快速切换 仅vless / 仅hy2 / 两个都开
+  增加 / 删除协议      sb -p     删 hy2 / 删 vless / 两个都开
   重启服务             sb -s     重启 sb-onekey 服务
   升级 sing-box        sb -v     检查并升级到最新 release
   开启 BBR 加速        sb -b     写 sysctl 并持久化(已是 BBR 则跳过)
