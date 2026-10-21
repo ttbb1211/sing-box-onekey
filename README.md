@@ -61,12 +61,13 @@ sb
  6 . 开启 BBR 加速                (sb -b)
  7 . 删除整个节点(保留 sb 命令)   (sb -r)
  8 . 彻底卸载(连 sb 一起删)       (sb -u)
+ 9 . 检查脚本更新(升 sb 自身)     (sb -U)
  0 . 退出
 
 请选择:
 ```
 
-没装节点时菜单是四项：`1 安装 / 2 帮助 / 3 彻底卸载 / 0 退出`。
+没装节点时菜单是五项：`1 安装 / 2 帮助 / 3 彻底卸载 / 4 检查脚本更新 / 0 退出`。
 
 > **3 和 7 别混**：`3` 只动**协议**（删一个，另一个继续用），`7` 删**整个节点**（服务+配置+证书全清）。两个都有二次确认，看清再按 `y`。
 
@@ -89,9 +90,10 @@ sb
 | `sb -i` | 安装节点（已装会拒绝，需先 `sb -r`） |
 | `sb -r` | 删除整个节点（**会二次确认**），**保留 `sb` 命令**，以后可再 `sb -i` |
 | `sb -u` | 彻底卸载（节点 + `sb` 命令一起删，**会二次确认**） |
+| `sb -U` | **检查脚本自身更新**（对比远端版本，有新版可一键升级，不动节点） |
 | `sb -h` | 帮助 |
 
-长参数同样可用：`--info` / `--edit` / `--protocol` / `--restart` / `--upgrade` / `--bbr` / `--install` / `--remove` / `--uninstall` / `--help`。
+长参数同样可用：`--info` / `--edit` / `--protocol` / `--restart` / `--upgrade` / `--bbr` / `--install` / `--remove` / `--uninstall` / `--update` / `--help`。
 
 > `/usr/local/bin/sb-onekey` 是 **sing-box 二进制**，不是本脚本；脚本入口是 `/usr/local/bin/sb`（另建 `sbctl` 软链兼容旧名）。两者刻意分开，避免把二进制覆盖掉。
 
@@ -263,17 +265,54 @@ sb -b
 
 做的事：
 
-1. 读当前拥塞控制算法，**已经是 `bbr` 就直接返回**，不重复折腾
-2. `modprobe tcp_bbr`，并检查内核是否真的支持（不支持会报出可用算法列表）
-3. 写 `/etc/sysctl.d/99-bbr.conf`：
+1. 读当前拥塞控制算法和队列调度
+2. **已经是 `bbr` + `fq` 也要检查持久化**（v1.11 起）：`99-bbr.conf`、`/etc/modules` 里的 `tcp_bbr`、`sysctl`/`modules` 服务开机启用，缺哪样补哪样
+3. 没开则 `modprobe tcp_bbr`，并检查内核是否真的支持（不支持会报出可用算法列表）
+4. 写 `/etc/sysctl.d/99-bbr.conf`：
    ```
    net.core.default_qdisc=fq
    net.ipv4.tcp_congestion_control=bbr
    ```
-4. `sysctl -p` 立即生效
-5. `rc-update add sysctl boot`，保证重启后自动加载
+5. `sysctl -p` 立即生效
+6. `rc-update add sysctl boot` / `rc-update add modules boot`
+
+输出会区分两种情况：
+
+```
+[OK] BBR 已开启且持久化完整: 拥塞控制=bbr  队列调度=fq
+[OK] BBR 已开启: 拥塞控制=bbr  队列调度=fq
+[INFO] 已补齐持久化(99-bbr.conf + /etc/modules),重启后自动生效
+```
 
 > 只改拥塞控制算法和队列调度，不动节点配置，随时可回退（`sysctl -w net.ipv4.tcp_congestion_control=cubic`）。
+> 幂等：重复执行第二次不会改动任何东西。
+
+---
+
+## 检查脚本更新：`sb -U`
+
+不知道自己跑的是不是最新版？一条命令：
+
+```sh
+sb -U
+```
+
+```
+[INFO] 当前脚本版本: v1.10
+[INFO] 正在检查远端最新版...
+[INFO] 发现新版本: v1.10 → v1.12
+升级到 v1.12? [y/N]: y
+[OK] 脚本已升级: v1.10 → v1.12
+[INFO] 重新敲 sb 生效(当前这次运行的还是旧版)
+```
+
+- 只换 `/usr/local/bin/sb` 这个命令文件，**不动节点、配置、证书、端口**
+- 已是最新会直接说 `已是最新版 vX.Y,无需更新`
+- 本地版本比远端还新（自己改过）→ 不覆盖，提示 `本地 vX 比远端 vY 还新`
+- 下载内容必须**语法校验通过**才覆盖，防止把 404 页面写进 `sb`
+- 菜单第 9 项就是它
+
+> 当前版本号在 `sb` 横幅第一行就能看到，`sb -h` 也会显示。
 
 ---
 

@@ -20,7 +20,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="1.11"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="1.12"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -994,6 +994,70 @@ EOF
     fi
 }
 
+# ---------- 检查 / 升级脚本自身 ----------
+# 版本比较:$1 > $2 返回 0(纯数字点分,如 1.10 > 1.9)
+_ver_gt() {
+    _a="$1"; _b="$2"
+    while :; do
+        _x="${_a%%.*}"; _y="${_b%%.*}"
+        case "$_x" in ''|*[!0-9]*) _x=0 ;; esac
+        case "$_y" in ''|*[!0-9]*) _y=0 ;; esac
+        [ "$_x" -gt "$_y" ] && return 0
+        [ "$_x" -lt "$_y" ] && return 1
+        case "$_a" in *.*) _a="${_a#*.}" ;; *) _a="" ;; esac
+        case "$_b" in *.*) _b="${_b#*.}" ;; *) _b="" ;; esac
+        [ -z "$_a" ] && [ -z "$_b" ] && return 1
+    done
+}
+
+do_self_update() {
+    check_env
+    info "当前脚本版本: v$SCRIPT_VER"
+    info "正在检查远端最新版..."
+    _tmp="/tmp/.sb-onekey-upd.$$"
+    if ! curl -fsSL --max-time 20 -H 'Cache-Control: no-cache' "$SELF_URL" -o "$_tmp" 2>/dev/null; then
+        rm -f "$_tmp"
+        die "拉取远端脚本失败,检查网络: $SELF_URL"
+    fi
+    _rv="$(sed -n 's/^SCRIPT_VER="\([^"]*\)".*/\1/p' "$_tmp" 2>/dev/null | head -1)"
+    if [ -z "$_rv" ]; then
+        rm -f "$_tmp"
+        die "远端返回内容异常(取不到版本号),已中止,原脚本未改动"
+    fi
+    if [ "$_rv" = "$SCRIPT_VER" ]; then
+        rm -f "$_tmp"
+        ok "已是最新版 v$SCRIPT_VER,无需更新"
+        return 0
+    fi
+    if _ver_gt "$SCRIPT_VER" "$_rv"; then
+        rm -f "$_tmp"
+        ok "本地 v$SCRIPT_VER 比远端 v$_rv 还新(自己改过?),不覆盖"
+        return 0
+    fi
+    info "发现新版本: v$SCRIPT_VER → v$_rv"
+    if ! confirm_yn "升级到 v$_rv?"; then
+        rm -f "$_tmp"
+        warn "已取消,脚本未改动"
+        return 0
+    fi
+    # 下载内容必须语法通过,否则绝不覆盖(防止把 404 页面写进 sb)
+    if ! sh -n "$_tmp" 2>/dev/null; then
+        rm -f "$_tmp"
+        die "下载的脚本语法校验失败,已中止,原脚本未改动"
+    fi
+    # ★ 不能 install 覆盖正在执行的自己(Text file busy):先落临时名再 mv
+    if ! cp "$_tmp" "$SELF_BIN.new" 2>/dev/null || ! chmod 755 "$SELF_BIN.new" 2>/dev/null \
+       || ! mv -f "$SELF_BIN.new" "$SELF_BIN" 2>/dev/null; then
+        rm -f "$_tmp" "$SELF_BIN.new"
+        die "覆盖 $SELF_BIN 失败(权限?),手动执行:
+  curl -fsSL $SELF_URL -o $SELF_BIN && chmod +x $SELF_BIN"
+    fi
+    rm -f "$_tmp"
+    _ensure_alt_link
+    ok "脚本已升级: v$SCRIPT_VER → v$_rv"
+    info "重新敲 sb 生效(当前这次运行的还是旧版)"
+}
+
 # ---------- 主菜单 ----------
 do_menu() {
     check_env
@@ -1011,6 +1075,7 @@ do_menu() {
  6 . 开启 BBR 加速                (sb -b)
  7 . 删除整个节点(保留 sb 命令)   (sb -r)
  8 . 彻底卸载(连 sb 一起删)       (sb -u)
+ 9 . 检查脚本更新(升 sb 自身)     (sb -U)
  0 . 退出
 
 EOF
@@ -1020,6 +1085,7 @@ EOF
  1 . 安装节点                     (sb -i)
  2 . 帮助                         (sb -h)
  3 . 彻底卸载(连 sb 一起删)       (sb -u)
+ 4 . 检查脚本更新(升 sb 自身)     (sb -U)
  0 . 退出
 
 EOF
@@ -1030,11 +1096,12 @@ EOF
             1) if [ -f "$PARAMS" ]; then do_info; else do_install; fi ;;
             2) if [ -f "$PARAMS" ]; then do_edit; else do_help; fi ;;
             3) if [ -f "$PARAMS" ]; then do_edit_protocols; else do_uninstall; return 0; fi ;;
-            4) if [ -f "$PARAMS" ]; then do_restart; else warn "未安装"; fi ;;
+            4) if [ -f "$PARAMS" ]; then do_restart; else do_self_update; fi ;;
             5) if [ -f "$PARAMS" ]; then do_upgrade; else warn "未安装"; fi ;;
             6) do_bbr ;;
             7) if [ -f "$PARAMS" ]; then do_remove; else warn "未安装"; fi ;;
             8) do_uninstall; return 0 ;;
+            9) do_self_update ;;
             0|q|Q|exit) return 0 ;;
             '') return 0 ;;
             *) warn "无效选择: $_c" ;;
@@ -1062,11 +1129,15 @@ do_help() {
   安装节点             sb -i     已安装会拒绝,需先 sb -r
   删除整个节点         sb -r     服务/配置/证书全清(会二次确认),保留 sb 命令
   彻底卸载             sb -u     节点 + sb 命令一起删
+  检查脚本更新         sb -U     对比远端版本,有新版可一键升级 sb 自身
   帮助                 sb -h     显示本帮助
 
   长参数也认: --info / --edit / --protocol / --restart / --upgrade / --bbr
-              --install / --remove / --uninstall / --help
+              --install / --remove / --uninstall / --update / --help
   非交互编辑:  sb -e VLESS_PORT=65006 ENABLE_HY2=1
+
+  版本自检:    sb -n 顶部横幅、sb -h 帮助头都会显示当前脚本版本
+  升级脚本:    sb -U  (只换 sb 命令,不动节点/配置/证书)
 
 安装时可用的环境变量(非交互):
   PROTOCOLS=vless|hy2|both   选协议,默认交互询问(回车=both)
@@ -1108,6 +1179,7 @@ case "${1:-}" in
     -b|--bbr|bbr)                                  do_bbr ;;
     -r|--remove|remove|del|rm|delete)              do_remove ;;
     -u|--uninstall|uninstall|purge)                do_uninstall ;;
+    -U|--update|--self-update|update|self-update)  do_self_update ;;
     -h|--help|help)                                do_help ;;
     *) die "未知参数: $1  (敲 sb -h 看帮助)" ;;
 esac
