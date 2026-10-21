@@ -1058,6 +1058,29 @@ do_self_update() {
     info "重新敲 sb 生效(当前这次运行的还是旧版)"
 }
 
+# ---------- 进菜单时静默自检版本 ----------
+# 老版本不认识 sb -U(先有鸡还是先有蛋),所以菜单里常驻一行提示:
+# 每次会话只查一次、仅交互终端才查、超时 6s 静默放弃,查不到就当没这回事。
+_SELF_CHK=0
+check_self_version_quiet() {
+    [ "$_SELF_CHK" = "1" ] && return 0
+    _SELF_CHK=1
+    has_tty || return 0
+    _tmp="/tmp/.sb-verchk.$$"
+    if ! curl -fsSL --max-time 6 -H 'Cache-Control: no-cache' "$SELF_URL" -o "$_tmp" 2>/dev/null; then
+        rm -f "$_tmp"
+        return 0
+    fi
+    _rv="$(sed -n 's/^SCRIPT_VER="\([^"]*\)".*/\1/p' "$_tmp" 2>/dev/null | head -1)"
+    rm -f "$_tmp"
+    case "$_rv" in
+        ''|*[!0-9.]*) return 0 ;;
+    esac
+    [ "$_rv" = "$SCRIPT_VER" ] && return 0
+    _ver_gt "$SCRIPT_VER" "$_rv" && return 0
+    printf "${YLW}[有新版本] 脚本 v$SCRIPT_VER → v$_rv,敲菜单里的「检查脚本更新」或 sb -U 升级${NC}\n"
+}
+
 # ---------- 主菜单 ----------
 do_menu() {
     check_env
@@ -1090,6 +1113,7 @@ EOF
 
 EOF
         fi
+        check_self_version_quiet
         printf '请选择: '
         _c="$(tty_read)" || return 0
         case "$_c" in
@@ -1136,8 +1160,11 @@ do_help() {
               --install / --remove / --uninstall / --update / --help
   非交互编辑:  sb -e VLESS_PORT=65006 ENABLE_HY2=1
 
-  版本自检:    sb -n 顶部横幅、sb -h 帮助头都会显示当前脚本版本
+  版本自检:    敲 sb 进菜单 —— 远端有新版时,菜单上方会自己冒出黄色提示
+               或 sb -U 立即比对(顺便可一键升)
   升级脚本:    sb -U  (只换 sb 命令,不动节点/配置/证书)
+  老版本升级:  当前 sb 若不认识 -U,先执行:
+                 curl -fsSL https://raw.githubusercontent.com/ttbb1211/sing-box-onekey/main/sing-box-onekey.sh -o /usr/local/bin/sb && chmod +x /usr/local/bin/sb
 
 安装时可用的环境变量(非交互):
   PROTOCOLS=vless|hy2|both   选协议,默认交互询问(回车=both)
