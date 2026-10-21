@@ -1015,7 +1015,9 @@ do_self_update() {
     info "当前脚本版本: v$SCRIPT_VER"
     info "正在检查远端最新版..."
     _tmp="/tmp/.sb-onekey-upd.$$"
-    if ! curl -fsSL --max-time 20 -H 'Cache-Control: no-cache' "$SELF_URL" -o "$_tmp" 2>/dev/null; then
+    # ?t= 时间戳:绕开 raw.githubusercontent 的 CDN 缓存(刚推完的几分钟内会返回旧文件)
+    _url="$SELF_URL?t=$(date +%s)"
+    if ! curl -fsSL --max-time 20 -H 'Cache-Control: no-cache' "$_url" -o "$_tmp" 2>/dev/null; then
         rm -f "$_tmp"
         die "拉取远端脚本失败,检查网络: $SELF_URL"
     fi
@@ -1067,7 +1069,7 @@ check_self_version_quiet() {
     _SELF_CHK=1
     has_tty || return 0
     _tmp="/tmp/.sb-verchk.$$"
-    if ! curl -fsSL --max-time 6 -H 'Cache-Control: no-cache' "$SELF_URL" -o "$_tmp" 2>/dev/null; then
+    if ! curl -fsSL --max-time 6 -H 'Cache-Control: no-cache' "$SELF_URL?t=$(date +%s)" -o "$_tmp" 2>/dev/null; then
         rm -f "$_tmp"
         return 0
     fi
