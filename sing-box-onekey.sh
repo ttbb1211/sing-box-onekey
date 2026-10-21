@@ -20,7 +20,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="1.9"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="1.10"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -75,18 +75,22 @@ install_deps() {
     for _c in curl openssl tar; do
         command -v "$_c" >/dev/null 2>&1 || _need="$_need $_c"
     done
+    # ★ sing-box 官方 linux 二进制是 glibc 动态链接的,Alpine(musl) 必须有 gcompat 才能执行。
+    #   缺它时报错是 `sh: /usr/local/bin/sb-onekey: not found`(不是 cannot execute),
+    #   极易误判成"文件没装上",实际文件在、只是动态链接器找不到。
+    apk info -e gcompat >/dev/null 2>&1 || _need="$_need gcompat"
     if [ -z "$_need" ]; then
-        ok "依赖已存在(curl/openssl/tar),无需安装"
+        ok "依赖已存在(curl/openssl/tar/gcompat),无需安装"
         return 0
     fi
     info "缺少:$_need —— 开始安装..."
     apk update >/dev/null 2>&1 || warn "apk update 失败(源可能不可达),继续尝试安装"
-    if ! apk add --no-cache curl openssl tar >/dev/null 2>&1; then
+    if ! apk add --no-cache curl openssl tar gcompat >/dev/null 2>&1; then
         die "依赖安装失败。请依次检查:
   1) Alpine 源是否可用: cat /etc/apk/repositories
   2) 网络/DNS 是否通:   ping -c2 dl-cdn.alpinelinux.org
   3) 磁盘是否满:        df -h /
-  手动补装: apk add curl openssl tar"
+  手动补装: apk add curl openssl tar gcompat"
     fi
     for _c in curl openssl tar; do
         command -v "$_c" >/dev/null 2>&1 || die "$_c 安装后仍不可用,请手动执行: apk add $_c"
@@ -226,7 +230,19 @@ install_singbox() {
     tar xzf "$_tmp/sb.tar.gz" -C "$_tmp"
     install -m755 "$_tmp/sing-box-${SB_VERSION}-linux-${ARCH}/sing-box" "$BIN"
     rm -rf "$_tmp"
-    ok "sing-box $( $BIN version | head -1 | awk '{print $3}') 安装完成"
+    # ★ 装完必须试跑一次:musl 系统缺 gcompat 时二进制"在但不执行",旧版会打出
+    #   `[OK] sing-box  安装完成`(版本号空),后面才在生成密钥时报 not found
+    _v="$( "$BIN" version 2>/dev/null | head -1 | awk '{print $3}' )"
+    if [ -z "$_v" ]; then
+        warn "sing-box 二进制无法执行(常见原因:缺 gcompat),尝试自动补装..."
+        apk add --no-cache gcompat >/dev/null 2>&1 || true
+        _v="$( "$BIN" version 2>/dev/null | head -1 | awk '{print $3}' )"
+        [ -n "$_v" ] || die "sing-box 已装上但跑不起来。手动排查:
+  1) 补依赖:  apk add gcompat
+  2) 看报错:  /usr/local/bin/sb-onekey version
+  3) 查架构:  uname -m (应为 x86_64 或 aarch64)"
+    fi
+    ok "sing-box v$_v 安装完成"
 }
 
 # ---------- 参数生成与持久化 ----------
@@ -602,7 +618,12 @@ do_info() {
     if svc_status; then printf "${GRN}运行中${NC}\n"
     else printf "${RED}未运行${NC}  (启动: rc-service sb-onekey start)\n"; fi
     if [ -x "$BIN" ]; then
-        printf '  sing-box  : v%s\n' "$( "$BIN" version 2>/dev/null | head -1 | awk '{print $3}')"
+        _sbv="$( "$BIN" version 2>/dev/null | head -1 | awk '{print $3}')"
+        if [ -n "$_sbv" ]; then
+            printf '  sing-box  : v%s\n' "$_sbv"
+        else
+            printf '  sing-box  : %s\n' "${RED}无法执行 —— 多半缺 gcompat,执行: apk add gcompat${NC}"
+        fi
     else
         printf '  sing-box  : %s\n' "${RED}二进制缺失${NC}"
     fi

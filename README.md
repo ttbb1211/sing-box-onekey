@@ -16,7 +16,7 @@
 | **状态一眼看清** | 菜单顶部直接显示系统、IP 归属地、服务状态、协议、端口**实时监听状态** |
 | **一键 BBR** | 菜单第 6 项，写 `sysctl.d` 持久化，重启仍生效 |
 | **删错不了** | 删节点 / 彻底卸载都先列清单再二次确认；只删一个协议走 `3`，不动另一个 |
-| **依赖自动装** | 裸机 Alpine 直接跑，自动补 curl / openssl / tar，缺什么装什么 |
+| **依赖自动装** | 裸机 Alpine 直接跑，自动补 curl / openssl / tar / **gcompat**，缺什么装什么 |
 | **隔离共存** | 服务名 `sb-onekey`、目录 `/etc/sb-onekey`、二进制 `/usr/local/bin/sb-onekey`，不碰任何第三方安装 |
 | **自动校验** | 生成配置后跑 `sing-box check`，校验不过直接退出，不会留半残配置 |
 
@@ -46,7 +46,7 @@ sb
 
 ```
 ================================================================
- sing-box-onekey  v1.9
+ sing-box-onekey  v1.10
  系统: Alpine 3.23.6 / 内核 6.18.57-0-virt / x86_64
  IP  : 203.0.113.10 (香港)
  服务: 运行中   协议: vless-reality + hysteria2
@@ -279,15 +279,35 @@ sb -b
 
 ## 依赖说明
 
-脚本只依赖三样，缺了会**自动 `apk add`**：
+脚本依赖四样，缺了会**自动 `apk add`**：
 
 | 依赖 | 用途 | 说明 |
 |---|---|---|
 | `curl` | 下载 sing-box / 查 IP | 裸机没有时脚本自己装 |
 | `openssl` | 生成 hy2 自签证书、算 pinSHA256 | |
 | `tar` | 解压 sing-box 发布包 | |
+| **`gcompat`** | **让 sing-box 官方二进制能在 musl 上跑** | **必须**，见下方说明 |
 
 已存在则跳过安装，不会每次 `apk update` 折腾。
+
+### 为什么需要 gcompat（v1.10 修复）
+
+sing-box 官方发布的 `linux-amd64` / `linux-arm64` 二进制是 **glibc 动态链接**的，而 Alpine 用的是 musl。缺 `gcompat` 时执行它只会得到一句：
+
+```
+sh: /usr/local/bin/sb-onekey: not found
+```
+
+**文件明明在，却报 not found** —— 这是「动态链接器找不到」的典型症状，不是文件没装上，极容易误判。v1.9 及更早版本只装 curl/openssl/tar，在全新的 Alpine 上会卡在这里（表现为「reality 密钥对生成失败」）。
+
+v1.10 起：装依赖时自动补 `gcompat`，并且**装完 sing-box 立刻试跑一次**，跑不起来会明确报错而不是假装成功。
+
+手动补装：
+
+```sh
+apk add --no-cache gcompat
+/usr/local/bin/sb-onekey version    # 能打印版本就说明好了
+```
 
 `apk add` 失败时会打印排查指引（源 / 网络 / 磁盘），而不是丢一句「安装失败」：
 
@@ -296,7 +316,7 @@ sb -b
   1) Alpine 源是否可用: cat /etc/apk/repositories
   2) 网络/DNS 是否通:   ping -c2 dl-cdn.alpinelinux.org
   3) 磁盘是否满:        df -h /
-  手动补装: apk add curl openssl tar
+  手动补装: apk add curl openssl tar gcompat
 ```
 
 > **必须能访问 Alpine 官方源**。如果机器源被换成了内网/失效镜像，`apk add` 会失败 —— 脚本不会自动改你的 `repositories`。
