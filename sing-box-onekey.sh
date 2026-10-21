@@ -20,7 +20,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="1.8"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="1.9"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -54,6 +54,20 @@ check_env() {
 detect_os() {
     check_env
     info "系统: Alpine $(cat /etc/alpine-release) / init: OpenRC"
+}
+
+# 危险操作二次确认。无终端(脚本化调用)时跳过确认,保持 sb -r 可非交互使用
+confirm_yn() {  # $1=提示语  0=确认 1=取消
+    if ! has_tty; then
+        warn "非交互环境,跳过确认直接执行"
+        return 0
+    fi
+    printf '%s [y/N]: ' "$1"
+    _yn="$(tty_read)" || return 1
+    case "$_yn" in
+        y|Y|yes|YES) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 
 install_deps() {
@@ -216,6 +230,11 @@ install_singbox() {
 }
 
 # ---------- 参数生成与持久化 ----------
+# 把值安全地写进 params.env:单引号包裹 + 去掉值里自带的单引号
+# ★必须加引号 —— 否则 NODE_NAME="香港 节点1" 会写成 `NODE_NAME=香港 节点1`,
+#   source 时被解析成「赋值 NODE_NAME=香港」+「执行命令 节点1」→ not found
+_sq() { printf "'%s'" "$(printf '%s' "$1" | tr -d "'")"; }
+
 save_params() {
     mkdir -p "$CONF_DIR"
     cat > "$PARAMS" <<EOF
@@ -223,8 +242,8 @@ ENABLE_VLESS=$ENABLE_VLESS
 ENABLE_HY2=$ENABLE_HY2
 VLESS_PORT=$VLESS_PORT
 HY2_PORT=$HY2_PORT
-SNI=$SNI
-NODE_NAME=$NODE_NAME
+SNI=$(_sq "$SNI")
+NODE_NAME=$(_sq "$NODE_NAME")
 SB_VERSION=$SB_VERSION
 REALITY_PRIV=$REALITY_PRIV
 REALITY_PUB=$REALITY_PUB
@@ -543,6 +562,9 @@ do_install() {
     fi
 
     ask_text SNI       "$(printf 'SNI 域名(回车默认 www.icloud.com): ')" "www.icloud.com"
+    case "$SNI" in
+        *' '*) die "SNI 不能含空格(域名格式),收到: $SNI" ;;
+    esac
     ask_text NODE_NAME "$(printf '节点名称(回车默认用主机名: '$(hostname)') : ')" "$(hostname)"
     info "预检 SNI: https://$SNI"
     if ! curl -fsI --max-time 8 "https://$SNI" >/dev/null 2>&1; then
@@ -645,6 +667,8 @@ toggle_protocols() {
     printf '\n当前协议:\n'
     printf '  vless-reality : %b\n' "$_vs"
     printf '  hysteria2     : %b\n' "$_hs"
+    printf "\n${CYN}【说明】这里只删「单个协议」${NC}:另一个协议继续工作,凭据(密码/证书)保留,随时能开回来。\n"
+    printf "        要删「整个节点」(服务/配置/证书全清),请退出后用 ${CYN}7 / sb -r${NC}。\n"
     printf '\n请选择:\n'
     printf '  1) 删除 hysteria2      → 只留 vless-reality,释放 UDP 端口\n'
     printf '  2) 删除 vless-reality  → 只留 hysteria2,释放 TCP 端口\n'
@@ -801,11 +825,38 @@ do_edit() {
 
 # ---------- 删除节点(保留 sb 命令,方便以后重装) ----------
 do_remove() {
-    detect_os
+    check_env
     if [ ! -f "$PARAMS" ] && [ ! -x "$BIN" ]; then
         warn "本机没有 sb-onekey 节点,无需删除"
         return 0
     fi
+    # 只读变量,不用 load_params(参数残缺时不该连删都删不掉)
+    [ -f "$PARAMS" ] && . "$PARAMS" 2>/dev/null
+    true
+
+    printf "\n${YLW}========== 删除节点确认 ==========${NC}\n"
+    printf '  节点名称  : %s\n' "${NODE_NAME:-未知}"
+    printf '  已装协议  : '
+    _any=""
+    if [ "${ENABLE_VLESS:-0}" = "1" ]; then printf 'vless-reality(%s/TCP)' "${VLESS_PORT:-?}"; _any=1; fi
+    if [ "${ENABLE_HY2:-0}" = "1" ]; then
+        [ -n "$_any" ] && printf ' + '
+        printf 'hysteria2(%s/UDP)' "${HY2_PORT:-?}"
+    fi
+    printf '\n\n'
+    printf "  ${RED}将会删除${NC}:\n"
+    printf '    · 服务 sb-onekey(停止 + 取消开机自启)\n'
+    printf '    · /etc/sb-onekey(配置 / 参数 / 证书)\n'
+    printf '    · /usr/local/bin/sb-onekey(sing-box 二进制)\n'
+    printf '    · /var/log/sb-onekey.log\n'
+    printf "\n  ${RED}后果${NC}: UUID / 密码 / 证书全部丢失,重装后分享链接会变\n"
+    printf "  ${GRN}只想删一个协议?${NC} 取消后改用 ${CYN}3 / sb -p${NC} —— 另一个协议继续工作、凭据保留\n"
+    printf "${YLW}==================================${NC}\n"
+    if ! confirm_yn '确认删除节点?'; then
+        warn "已取消,什么都没删"
+        return 0
+    fi
+
     rc-service sb-onekey stop >/dev/null 2>&1 || true
     rc-update del sb-onekey default >/dev/null 2>&1 || true
     rm -rf "$CONF_DIR" "$BIN" /var/log/sb-onekey.log /etc/init.d/sb-onekey
@@ -815,12 +866,22 @@ do_remove() {
 
 # ---------- 彻底卸载(节点 + sb 命令) ----------
 do_uninstall() {
-    detect_os
+    check_env
+    printf "\n${YLW}========== 彻底卸载确认 ==========${NC}\n"
+    printf "  ${RED}将会删除${NC}:\n"
+    printf '    · 节点(服务 / /etc/sb-onekey / 二进制 / 日志)\n'
+    printf '    · sb 命令本身(/usr/local/bin/sb 与 sbctl)\n'
+    printf "\n  ${RED}后果${NC}: 删完 sb 就 not found,想再装得重新下载脚本\n"
+    printf "  ${GRN}只想删节点?${NC} 取消后改用 ${CYN}7 / sb -r${NC} —— sb 命令会保留\n"
+    printf "${YLW}==================================${NC}\n"
+    if ! confirm_yn '确认彻底卸载?'; then
+        warn "已取消,什么都没删"
+        return 0
+    fi
     rc-service sb-onekey stop >/dev/null 2>&1 || true
     rc-update del sb-onekey default >/dev/null 2>&1 || true
     rm -rf "$CONF_DIR" "$BIN" /var/log/sb-onekey.log /etc/init.d/sb-onekey "$SELF_BIN" "$SELF_BIN_ALT"
     ok "已彻底卸载(节点 + sb 命令都已删除,不影响 fscarmen 等第三方安装)"
-    printf "  只想删节点、保留命令的话,下次用: %s\n" "sb -r"
 }
 
 # ---------- 重启 / 升级 / 协议切换 ----------
@@ -908,11 +969,11 @@ do_menu() {
 
  1 . 查看节点信息 / 分享链接       (sb -n)
  2 . 修改节点配置                 (sb -e)
- 3 . 增加 / 删除协议              (sb -p)
+ 3 . 增加 / 删除协议(单个)        (sb -p)
  4 . 重启服务                     (sb -s)
  5 . 升级 sing-box                (sb -v)
  6 . 开启 BBR 加速                (sb -b)
- 7 . 删除节点(保留 sb 命令)       (sb -r)
+ 7 . 删除整个节点(保留 sb 命令)   (sb -r)
  8 . 彻底卸载(连 sb 一起删)       (sb -u)
  0 . 退出
 
@@ -922,6 +983,7 @@ EOF
 
  1 . 安装节点                     (sb -i)
  2 . 帮助                         (sb -h)
+ 3 . 彻底卸载(连 sb 一起删)       (sb -u)
  0 . 退出
 
 EOF
@@ -931,7 +993,7 @@ EOF
         case "$_c" in
             1) if [ -f "$PARAMS" ]; then do_info; else do_install; fi ;;
             2) if [ -f "$PARAMS" ]; then do_edit; else do_help; fi ;;
-            3) if [ -f "$PARAMS" ]; then do_edit_protocols; else warn "未安装"; fi ;;
+            3) if [ -f "$PARAMS" ]; then do_edit_protocols; else do_uninstall; return 0; fi ;;
             4) if [ -f "$PARAMS" ]; then do_restart; else warn "未安装"; fi ;;
             5) if [ -f "$PARAMS" ]; then do_upgrade; else warn "未安装"; fi ;;
             6) do_bbr ;;
@@ -957,12 +1019,12 @@ do_help() {
   ------------------   -------   --------------------------------------------
   查看节点信息         sb -n     协议/端口/监听状态/服务状态/分享链接
   修改节点配置         sb -e     改节点名/SNI/端口/重置凭据/启停协议
-  增加 / 删除协议      sb -p     删 hy2 / 删 vless / 两个都开
+  增加 / 删除协议      sb -p     只删单个协议,另一个继续用,凭据保留
   重启服务             sb -s     重启 sb-onekey 服务
   升级 sing-box        sb -v     检查并升级到最新 release
   开启 BBR 加速        sb -b     写 sysctl 并持久化(已是 BBR 则跳过)
   安装节点             sb -i     已安装会拒绝,需先 sb -r
-  删除节点             sb -r     释放端口,保留 sb 命令,以后可再 sb -i
+  删除整个节点         sb -r     服务/配置/证书全清(会二次确认),保留 sb 命令
   彻底卸载             sb -u     节点 + sb 命令一起删
   帮助                 sb -h     显示本帮助
 
