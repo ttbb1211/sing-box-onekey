@@ -20,7 +20,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="1.12"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="1.13"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -227,8 +227,11 @@ install_singbox() {
     _tmp="$(mktemp -d)"
     curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${SB_VERSION}/sing-box-${SB_VERSION}-linux-${ARCH}.tar.gz" -o "$_tmp/sb.tar.gz" \
         || die "sing-box 下载失败(检查网络/安全组)"
-    tar xzf "$_tmp/sb.tar.gz" -C "$_tmp"
-    install -m755 "$_tmp/sing-box-${SB_VERSION}-linux-${ARCH}/sing-box" "$BIN"
+    # ★ 必须显式判错:包损坏/磁盘满时 tar 静默失败 => $BIN 不存在 => 后面会误报"缺 gcompat"
+    tar xzf "$_tmp/sb.tar.gz" -C "$_tmp" \
+        || { rm -rf "$_tmp"; die "sing-box 解压失败(包损坏或磁盘空间不足),请检查 df -h /"; }
+    install -m755 "$_tmp/sing-box-${SB_VERSION}-linux-${ARCH}/sing-box" "$BIN" \
+        || { rm -rf "$_tmp"; die "sing-box 安装到 $BIN 失败(权限不足?),请检查 /usr/local/bin 是否可写"; }
     rm -rf "$_tmp"
     # ★ 装完必须试跑一次:musl 系统缺 gcompat 时二进制"在但不执行",旧版会打出
     #   `[OK] sing-box  安装完成`(版本号空),后面才在生成密钥时报 not found
@@ -278,8 +281,9 @@ gen_params() {
     UUID="$($BIN generate uuid)"
     SHORT_ID="$(openssl rand -hex 8)"
     HY2_PASS="$($BIN generate uuid)"
-    save_params
-    ok "参数已持久化到 $PARAMS"
+    # ★ 这里只生成、不落盘。落盘由调用方在 write_config($BIN check) 通过之后再做,
+    #   否则校验失败时 params.env 已经存在 => 下次 do_install 判定"已安装"拒绝重装,
+    #   用户被迫先 sb -r 清干净才能重来。
 }
 
 load_params() {
@@ -299,12 +303,17 @@ load_params() {
 
 # ---------- hy2 自签证书(换证书前必须先停服务) ----------
 gen_cert() {
+    # ★ 自己保证目录存在:调用链上 gen_cert 早于 write_config/save_params,
+    #   不能指望它们顺带 mkdir(2026-10-22 v1.13 实测踩过,报"证书生成失败")
+    mkdir -p "$CONF_DIR"
+    chmod 700 "$CONF_DIR" 2>/dev/null || true
     rc-service sb-onekey stop >/dev/null 2>&1 || true
     openssl req -x509 -newkey rsa:2048 \
         -keyout "$CONF_DIR/hy2.key" -out "$CONF_DIR/hy2.crt" \
         -days 3650 -nodes \
         -subj "/CN=$SNI" -addext "subjectAltName=DNS:$SNI" 2>/dev/null \
         || die "证书生成失败"
+    chmod 600 "$CONF_DIR/hy2.key" 2>/dev/null || true
     ok "hy2 自签证书生成 ($SNI, 10年)"
 }
 
@@ -373,6 +382,10 @@ $(gen_inbound_hy2)"
         printf '%s\n' "$_blocks"
         printf '\n  ],\n  "outbounds": [ { "type": "direct", "tag": "direct" } ]\n}\n'
     } > "$CONF_DIR/config.json"
+    # ★ config.json 含 reality 私钥 / hy2 密码 / UUID,不能让本机其它用户读到。
+    #   Alpine 默认 umask 022 会落成 644,必须显式收紧(目录同理,否则能列文件名)
+    chmod 700 "$CONF_DIR" 2>/dev/null || true
+    chmod 600 "$CONF_DIR/config.json" 2>/dev/null || true
     $BIN check -c "$CONF_DIR/config.json" || die "配置校验失败"
     ok "配置校验通过"
 }
@@ -397,12 +410,23 @@ EOF
     chmod +x /etc/init.d/sb-onekey
     rc-update add sb-onekey default 2>/dev/null || true
     rc-service sb-onekey restart
-    sleep 1
-    svc_status || die "服务启动失败,查看日志: tail -30 /var/log/sb-onekey.log"
+    svc_wait_ready || die "服务启动失败,查看日志: tail -30 /var/log/sb-onekey.log"
 }
 
 svc_status() {
     rc-service sb-onekey status >/dev/null 2>&1
+}
+
+# 等服务真正起来再判失败。低配机器加载 REALITY 密钥 + 绑端口可能超过 1 秒,
+# 固定 sleep 1 会误报"启动失败"(用户看到失败但服务其实起来了)。
+svc_wait_ready() {  # 最多等 5 秒
+    _w=0
+    while [ "$_w" -lt 5 ]; do
+        svc_status && return 0
+        _w=$((_w + 1))
+        sleep 1
+    done
+    return 1
 }
 
 get_ip() {
@@ -479,7 +503,13 @@ install_self() {
         _ensure_alt_link
         return 0
     fi
-    _tmp="/tmp/.sb-install.$$"
+    # ★ 用 mktemp 而不是 /tmp/.xxx.$$:PID 可预测,本机低权限用户可预先建同名符号链接,
+    #   让 root 的 cp / curl -o / chmod 全部作用到链接目标 => 任意文件写入。
+    #   mktemp 以 O_EXCL 创建不可预测文件名,天然免疫。
+    _tmp="$(mktemp /tmp/.sb-install.XXXXXX 2>/dev/null)" || {
+        warn "临时文件创建失败,跳过 sb 安装(不影响节点)"
+        return 0
+    }
     _src=""
     # curl|sh 场景下 $0 是 sh 或 /dev/fd/63,不可用 => 回源下载
     if [ -f "$0" ] && grep -q "sing-box-onekey" "$0" 2>/dev/null; then
@@ -492,9 +522,9 @@ install_self() {
             return 0
         fi
     fi
-    if ! grep -q "sing-box-onekey" "$_tmp" 2>/dev/null; then
+    if ! grep -q "sing-box-onekey" "$_tmp" 2>/dev/null || ! sh -n "$_tmp" 2>/dev/null; then
         rm -f "$_tmp"
-        warn "sb 内容校验失败,已跳过(不影响节点)"
+        warn "sb 内容或语法校验失败,已跳过(不影响节点)"
         return 0
     fi
     chmod 755 "$_tmp"
@@ -531,7 +561,11 @@ show_links() {
 }
 
 port_busy() {  # $1=端口
-    (netstat -tuln 2>/dev/null || ss -tuln 2>/dev/null) | grep -q "[:.]$1[^0-9]"
+    # 复用 port_listen(纯 /proc 实现),少一层对 busybox applet / net-tools 的依赖,
+    # 也与菜单里"端口监听状态"的判定口径完全一致。
+    port_listen "$1" tcp && return 0
+    port_listen "$1" udp && return 0
+    return 1
 }
 
 check_new_port() {  # $1=新端口 $2=旧端口  返回 0=可用
@@ -541,6 +575,19 @@ check_new_port() {  # $1=新端口 $2=旧端口  返回 0=可用
         warn "端口 $1 已被占用(可能是其他服务或另一个协议)"
         return 1
     fi
+    return 0
+}
+
+# SNI 白名单校验:只允许域名合法字符
+# ★ 不能用黑名单(只拒空格)。SNI 有两个危险去向:
+#   ① gen_cert 的 -subj "/CN=$SNI" —— 含 / = , + 会破坏 DN 结构,openssl 报错或生成畸形证书
+#   ② gen_inbound_* 直接拼进 JSON —— 含 " 或 \ 会让 JSON 非法
+#   两种情况最终都只会报"配置校验失败",排查成本高,不如在入口就拦住。
+check_sni() {  # $1=SNI  合法返回 0
+    case "$1" in
+        '')                warn "SNI 不能为空"; return 1 ;;
+        *[!A-Za-z0-9.-]*)  warn "SNI 只能含字母/数字/点/连字符,收到: $1"; return 1 ;;
+    esac
     return 0
 }
 
@@ -578,9 +625,7 @@ do_install() {
     fi
 
     ask_text SNI       "$(printf 'SNI 域名(回车默认 www.icloud.com): ')" "www.icloud.com"
-    case "$SNI" in
-        *' '*) die "SNI 不能含空格(域名格式),收到: $SNI" ;;
-    esac
+    check_sni "$SNI" || die "SNI 非法,已中止(换一个域名重试)"
     ask_text NODE_NAME "$(printf '节点名称(回车默认用主机名: '$(hostname)') : ')" "$(hostname)"
     info "预检 SNI: https://$SNI"
     if ! curl -fsI --max-time 8 "https://$SNI" >/dev/null 2>&1; then
@@ -594,6 +639,9 @@ do_install() {
         gen_cert
     fi
     write_config
+    # 全部校验通过才落盘:失败时 params.env 不落地,可直接重跑 sb -i 重来
+    save_params
+    ok "参数已持久化到 $PARAMS"
     svc_install
     ok "服务已启动并设为开机自启"
 
@@ -663,17 +711,17 @@ show_current() {
 }
 
 apply_edit() {  # $1=是否重签证书(1/0)
-    save_params
     if [ "${ENABLE_HY2:-1}" = "1" ]; then
         if [ "${1:-0}" = "1" ] || [ ! -f "$CONF_DIR/hy2.crt" ] || [ ! -f "$CONF_DIR/hy2.key" ]; then
             gen_cert
         fi
     fi
     write_config
+    # 同 do_install:校验通过才落盘,避免"SNI 改了但配置没生成成功"的半残状态
+    save_params
     svc_install >/dev/null 2>&1 || true
     rc-service sb-onekey restart >/dev/null 2>&1
-    sleep 1
-    svc_status || die "重启失败,查看: tail -30 /var/log/sb-onekey.log"
+    svc_wait_ready || die "重启失败,查看: tail -30 /var/log/sb-onekey.log"
     ok "已应用并重启"
     show_links
 }
@@ -751,7 +799,7 @@ do_edit() {
             _val="${_kv#*=}"
             case "$_k" in
                 NODE_NAME)  NODE_NAME="$_val" ;;
-                SNI)        SNI="$_val"; _need_cert=1 ;;
+                SNI)        check_sni "$_val" || die "SNI 非法: $_val"; SNI="$_val"; _need_cert=1 ;;
                 VLESS_PORT) check_new_port "$_val" "${VLESS_PORT:-}" || die "端口不可用: $_val"; VLESS_PORT="$_val" ;;
                 HY2_PORT)   check_new_port "$_val" "${HY2_PORT:-}"   || die "端口不可用: $_val"; HY2_PORT="$_val" ;;
                 UUID)       UUID="$_val" ;;
@@ -798,6 +846,7 @@ do_edit() {
                 printf '新 SNI 域名: '
                 _v="$(tty_read)" || break
                 if [ -n "$_v" ]; then
+                    check_sni "$_v" || { warn "SNI 非法,已取消(配置未改动)"; continue; }
                     info "预检 https://$_v ..."
                     curl -fsI --max-time 8 "https://$_v" >/dev/null 2>&1 \
                         && ok "域名可达" \
@@ -852,8 +901,13 @@ do_remove() {
         return 0
     fi
     # 只读变量,不用 load_params(参数残缺时不该连删都删不掉)
-    [ -f "$PARAMS" ] && . "$PARAMS" 2>/dev/null
-    true
+    # ★ set -u 对 source 同样生效:params.env 里若有未定义变量引用,shell 会直接退出,
+    #   2>/dev/null 只重定向 stderr、拦不住。必须先关掉 -u 再 source。
+    if [ -f "$PARAMS" ]; then
+        set +u
+        . "$PARAMS" 2>/dev/null
+        set -u
+    fi
 
     printf "\n${YLW}========== 删除节点确认 ==========${NC}\n"
     printf '  节点名称  : %s\n' "${NODE_NAME:-未知}"
@@ -1014,7 +1068,7 @@ do_self_update() {
     check_env
     info "当前脚本版本: v$SCRIPT_VER"
     info "正在检查远端最新版..."
-    _tmp="/tmp/.sb-onekey-upd.$$"
+    _tmp="$(mktemp /tmp/.sb-onekey-upd.XXXXXX 2>/dev/null)" || die "临时文件创建失败(检查 /tmp 是否可写)"
     # ?t= 时间戳:绕开 raw.githubusercontent 的 CDN 缓存(刚推完的几分钟内会返回旧文件)
     _url="$SELF_URL?t=$(date +%s)"
     if ! curl -fsSL --max-time 20 -H 'Cache-Control: no-cache' "$_url" -o "$_tmp" 2>/dev/null; then
@@ -1068,7 +1122,7 @@ check_self_version_quiet() {
     [ "$_SELF_CHK" = "1" ] && return 0
     _SELF_CHK=1
     has_tty || return 0
-    _tmp="/tmp/.sb-verchk.$$"
+    _tmp="$(mktemp /tmp/.sb-verchk.XXXXXX 2>/dev/null)" || return 0
     if ! curl -fsSL --max-time 6 -H 'Cache-Control: no-cache' "$SELF_URL?t=$(date +%s)" -o "$_tmp" 2>/dev/null; then
         rm -f "$_tmp"
         return 0
