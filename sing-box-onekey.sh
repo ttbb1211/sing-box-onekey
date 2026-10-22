@@ -20,7 +20,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="1.13"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="1.14"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -1064,18 +1064,36 @@ _ver_gt() {
     done
 }
 
+# 拉远端脚本、取版本号,并把「版本更高」的那份内容留在 $1 指向的文件里。
+# ★ raw.githubusercontent.com 的 CDN 行为不稳定(2026-10-22 实测):
+#   同一时刻「不带 query」拿到 v1.13(新)、「带 ?t=时间戳」反而拿到 v1.12(旧)。
+#   v1.12 加 ?t= 的初衷是绕缓存,实际在某些边缘节点上适得其反。
+#   所以两个都拉,按版本号取高的 —— 任一通道拿到新版都能升上去。
+_fetch_remote_ver() {  # $1=输出文件  $2=单次超时秒数(默认 20)  输出=远端版本号(取不到则空)
+    _frv_f="$1"
+    _frv_to="${2:-20}"
+    _frv_alt="$(mktemp /tmp/.sb-alt.XXXXXX 2>/dev/null)" || _frv_alt=""
+    _frv_best=""
+    curl -fsSL --max-time "$_frv_to" "$SELF_URL" -o "$_frv_f" 2>/dev/null || : > "$_frv_f"
+    _frv_best="$(sed -n 's/^SCRIPT_VER="\([^"]*\)".*/\1/p' "$_frv_f" 2>/dev/null | head -1)"
+    if [ -n "$_frv_alt" ]; then
+        if curl -fsSL --max-time "$_frv_to" -H 'Cache-Control: no-cache' "$SELF_URL?t=$(date +%s)" -o "$_frv_alt" 2>/dev/null; then
+            _frv_v2="$(sed -n 's/^SCRIPT_VER="\([^"]*\)".*/\1/p' "$_frv_alt" 2>/dev/null | head -1)"
+            if [ -n "$_frv_v2" ] && { [ -z "$_frv_best" ] || _ver_gt "$_frv_v2" "$_frv_best"; }; then
+                mv -f "$_frv_alt" "$_frv_f" 2>/dev/null && _frv_best="$_frv_v2"
+            fi
+        fi
+        rm -f "$_frv_alt"
+    fi
+    printf '%s' "$_frv_best"
+}
+
 do_self_update() {
     check_env
     info "当前脚本版本: v$SCRIPT_VER"
     info "正在检查远端最新版..."
     _tmp="$(mktemp /tmp/.sb-onekey-upd.XXXXXX 2>/dev/null)" || die "临时文件创建失败(检查 /tmp 是否可写)"
-    # ?t= 时间戳:绕开 raw.githubusercontent 的 CDN 缓存(刚推完的几分钟内会返回旧文件)
-    _url="$SELF_URL?t=$(date +%s)"
-    if ! curl -fsSL --max-time 20 -H 'Cache-Control: no-cache' "$_url" -o "$_tmp" 2>/dev/null; then
-        rm -f "$_tmp"
-        die "拉取远端脚本失败,检查网络: $SELF_URL"
-    fi
-    _rv="$(sed -n 's/^SCRIPT_VER="\([^"]*\)".*/\1/p' "$_tmp" 2>/dev/null | head -1)"
+    _rv="$(_fetch_remote_ver "$_tmp")"
     if [ -z "$_rv" ]; then
         rm -f "$_tmp"
         die "远端返回内容异常(取不到版本号),已中止,原脚本未改动"
@@ -1116,18 +1134,14 @@ do_self_update() {
 
 # ---------- 进菜单时静默自检版本 ----------
 # 老版本不认识 sb -U(先有鸡还是先有蛋),所以菜单里常驻一行提示:
-# 每次会话只查一次、仅交互终端才查、超时 6s 静默放弃,查不到就当没这回事。
+# 每次会话只查一次、仅交互终端才查、超时 4s 静默放弃,查不到就当没这回事。
 _SELF_CHK=0
 check_self_version_quiet() {
     [ "$_SELF_CHK" = "1" ] && return 0
     _SELF_CHK=1
     has_tty || return 0
     _tmp="$(mktemp /tmp/.sb-verchk.XXXXXX 2>/dev/null)" || return 0
-    if ! curl -fsSL --max-time 6 -H 'Cache-Control: no-cache' "$SELF_URL?t=$(date +%s)" -o "$_tmp" 2>/dev/null; then
-        rm -f "$_tmp"
-        return 0
-    fi
-    _rv="$(sed -n 's/^SCRIPT_VER="\([^"]*\)".*/\1/p' "$_tmp" 2>/dev/null | head -1)"
+    _rv="$(_fetch_remote_ver "$_tmp" 4)"
     rm -f "$_tmp"
     case "$_rv" in
         ''|*[!0-9.]*) return 0 ;;
