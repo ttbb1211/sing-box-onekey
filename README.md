@@ -261,6 +261,24 @@ sb -e ENABLE_VLESS=0                # 停用 vless,只留 hy2
 - **改 SNI**：hy2 证书自动重签（`pinSHA256` 会变，**旧链接立即失效，要重新复制**）
 - **启用 hy2**：如果证书不存在会自动生成
 - **禁用某协议**：配置文件里对应 inbound 直接移除，端口释放
+- **`8) 启用/禁用协议` 和主菜单 `3` / `sb -p` 是同一个函数**（`toggle_protocols`），效果完全一致，只是执行完回到 `sb -e` 的修改菜单。留这个入口是因为 `3) 4)` 改端口时会提示「请先用 8) 启用」，没有 8) 就是死胡同
+- **每个选项选完立刻生效并重启**，没有「攒着最后一起提交」
+
+### ⚠️ `own` 模式别用 `sb -e` 改 SNI
+
+`own`（偷自己）模式下，**改域名只能走 `sb domain`，不能用 `sb -e` 的 `2) SNI 域名`**。
+
+原因是 `sb -e` 只改 `SNI`，不动 `CERT_DIR` 和 nginx 回落站的 `server_name`，结果是：
+
+| 组件 | 改完的状态 |
+|---|---|
+| `config.json` 的 `server_name` | 新域名 |
+| hy2 证书（`CERT_DIR/fullchain.pem`） | **还是旧域名的** → 客户端校验必失败 |
+| nginx 回落站 `server_name` | **还是旧域名** → Reality 回落被 `ssl_reject_handshake` 拒掉 |
+
+而 `sb doctor` 只查签发者是不是 ACME，**查不出证书 CN 与 SNI 不匹配**，会误报全绿。
+
+`steal` 模式没有这个问题——那边本来就是自签证书，`apply_edit 1` 会重签。
 
 ---
 
