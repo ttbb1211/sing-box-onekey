@@ -28,11 +28,21 @@ jobs:
           set -euo pipefail
           git fetch --tags --force
 
+          # 已发版本的标题。不在这里的 tag 用 tag 名当标题。
+          # ★ 这张表要跟历史 Release 的实际标题保持一致，否则同步逻辑会把旧标题改成纯 tag 名。
           title_for() {
             case "$1" in
               v2.2.0) echo "v2.2 — 术语统一 + 菜单对齐" ;;
               v2.1.0) echo "v2.1 — sb -p 菜单重做" ;;
               v2.0.0) echo "v2.0 — 伪装模式(自建伪装站点) + 体检 + 备份 + 内置伪装站点" ;;
+              v1.14)  echo "v1.14 — 修 sb -U 拉不到新版" ;;
+              v1.13)  echo "v1.13 — 安全与健壮性加固" ;;
+              v1.12)  echo "v1.12: sb -U 检查/升级脚本自身 + 菜单版本自检" ;;
+              v1.11)  echo "v1.11 — BBR 已开启时也补齐持久化" ;;
+              v1.10)  echo "v1.10 — 自动补 gcompat，修全新 Alpine 上 sing-box 报 not found" ;;
+              v1.9)   echo "v1.9 — 删节点二次确认 + 协议子菜单加说明" ;;
+              v1.8)   echo "v1.8 — 协议子菜单可明确删除" ;;
+              v1.7)   echo "v1.7 — 敲 sb 出菜单 + 一键 BBR" ;;
               *)      echo "$1" ;;
             esac
           }
