@@ -16,11 +16,19 @@
 #    sb -s  重启服务          sb -v  升级 sing-box     sb -b  开启 BBR
 #    sb -r  删除节点(留命令)  sb -u  彻底卸载          sb -h  帮助
 #    sb -e SNI=www.nvidia.com VLESS_PORT=65010    # 非交互编辑
+#
+#  v2.0 新增「伪装模式」: steal(偷大厂,默认) / own(偷自己,自有域名+真证书)
+#    sb domain        一键「偷自己」:签 LE 证书 + 装 nginx 回落站 + 改配置 + 出链接
+#    sb domain --adopt  只把现有手工配置反填进 params.env,不重建
+#    sb doctor        体检(服务/端口归属/handshake/证书/解析/回落站)
+#    sb backup        备份配置      sb rollback  回滚到上一份备份
+#    sb site          铺假站模板(内置 tech / poetry 两套)
+#    sb reload-cert   给 acme.sh 当续期钩子(nginx reload + 同步证书 + 重启)
 # =============================================================
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="1.14"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="2.0"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -35,6 +43,23 @@ NODE_NAME="${NODE_NAME:-}"
 SB_VERSION="${SB_VERSION:-}"
 ENABLE_VLESS="${ENABLE_VLESS:-}"
 ENABLE_HY2="${ENABLE_HY2:-}"
+
+# ---------- 伪装模式相关(默认 steal,老用户行为不变) ----------
+TLS_MODE="${TLS_MODE:-}"              # steal | own
+DOMAIN="${DOMAIN:-}"                  # own 模式的自有域名(= SNI)
+ACME_EMAIL="${ACME_EMAIL:-}"
+WEBROOT="${WEBROOT:-/var/www/acme}"
+SITE_ROOT="${SITE_ROOT:-/var/www/site}"
+FALLBACK_PORT="${FALLBACK_PORT:-8001}"
+CERT_DIR="${CERT_DIR:-}"
+BACKUP_DIR="$CONF_DIR/backup"
+NGX_DIR="/etc/nginx/http.d"
+NGX_CONF="$NGX_DIR/sb-onekey.conf"
+ACME_HOME="/root/.acme.sh"
+
+# 内置假站模板(tar.gz + base64)。源码在仓库 themes/ 下,改完跑 tools/embed-themes.sh 重新生成
+THEME_TECH_B64='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'
+THEME_POETRY_B64='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'
 
 RED='\033[31m'; GRN='\033[32m'; CYN='\033[36m'; YLW='\033[33m'; NC='\033[0m'
 ok()  { printf "${GRN}[OK]${NC} %s\n" "$1"; }
@@ -269,6 +294,11 @@ REALITY_PUB=$REALITY_PUB
 UUID=$UUID
 SHORT_ID=$SHORT_ID
 HY2_PASS=$HY2_PASS
+TLS_MODE=$(_sq "${TLS_MODE:-steal}")
+DOMAIN=$(_sq "${DOMAIN:-}")
+ACME_EMAIL=$(_sq "${ACME_EMAIL:-}")
+FALLBACK_PORT=$(_sq "${FALLBACK_PORT:-8001}")
+CERT_DIR=$(_sq "${CERT_DIR:-}")
 EOF
     chmod 600 "$PARAMS"
 }
@@ -292,6 +322,17 @@ load_params() {
     # 兼容 v1.2 及更早(无 ENABLE_* 字段):默认两个协议都启用
     : "${ENABLE_VLESS:=1}"
     : "${ENABLE_HY2:=1}"
+    # 兼容 v1.x(无 TLS_MODE 字段):按老行为 = 偷大厂
+    : "${TLS_MODE:=steal}"
+    : "${DOMAIN:=}"
+    : "${ACME_EMAIL:=}"
+    : "${FALLBACK_PORT:=8001}"
+    : "${CERT_DIR:=}"
+    # own 模式必须自洽:没有域名/证书目录就当参数残缺,直接拦住
+    if [ "$TLS_MODE" = "own" ]; then
+        [ -n "$DOMAIN" ] || die "TLS_MODE=own 但 DOMAIN 为空,请重新执行: sb domain"
+        [ -n "$CERT_DIR" ] || die "TLS_MODE=own 但 CERT_DIR 为空,请重新执行: sb domain"
+    fi
     # 协议启用但端口为空 => 参数残缺
     if [ "$ENABLE_VLESS" = "1" ] && [ -z "${VLESS_PORT:-}" ]; then
         die "参数异常: ENABLE_VLESS=1 但 VLESS_PORT 为空,请重新安装"
@@ -301,8 +342,35 @@ load_params() {
     fi
 }
 
-# ---------- hy2 自签证书(换证书前必须先停服务) ----------
+# ---------- 证书路径与回落目标(按伪装模式分流) ----------
+# steal: hy2 自签(链接必须带 insecure + pinSHA256);reality 回落到 $SNI:443(别人的站)
+# own  : hy2 用 ACME 真证书(链接只带 sni);reality 回落到本机 nginx 127.0.0.1:8001
+hy2_crt() {
+    if [ "${TLS_MODE:-steal}" = "own" ]; then printf '%s/fullchain.pem' "$CERT_DIR"
+    else printf '%s/hy2.crt' "$CONF_DIR"; fi
+}
+hy2_key() {
+    if [ "${TLS_MODE:-steal}" = "own" ]; then printf '%s/key.pem' "$CERT_DIR"
+    else printf '%s/hy2.key' "$CONF_DIR"; fi
+}
+# 返回 "host port" 两个字段,调用方用 set -- 拆
+fallback_target() {
+    if [ "${TLS_MODE:-steal}" = "own" ]; then
+        printf '127.0.0.1 %s\n' "${FALLBACK_PORT:-8001}"
+    else
+        printf '%s 443\n' "$SNI"
+    fi
+}
+
+# ---------- hy2 证书 ----------
 gen_cert() {
+    # own 模式不自签:证书由 sb domain 用 acme.sh 签好放在 CERT_DIR,这里只校验
+    if [ "${TLS_MODE:-steal}" = "own" ]; then
+        _c="$(hy2_crt)"; _k="$(hy2_key)"
+        [ -f "$_c" ] && [ -f "$_k" ] || die "own 模式需要 ACME 证书,但 $_c 不存在。执行: sb domain"
+        ok "hy2 使用 ACME 证书: $_c"
+        return 0
+    fi
     # ★ 自己保证目录存在:调用链上 gen_cert 早于 write_config/save_params,
     #   不能指望它们顺带 mkdir(2026-10-22 v1.13 实测踩过,报"证书生成失败")
     mkdir -p "$CONF_DIR"
@@ -319,6 +387,8 @@ gen_cert() {
 
 # ---------- 配置生成(协议块模块化,新协议加一个 gen_inbound_xxx 再挂进 write_config) ----------
 gen_inbound_vless() {
+    set -- $(fallback_target)
+    _hs_srv="$1"; _hs_port="$2"
     cat <<EOF
     {
       "type": "vless",
@@ -333,7 +403,7 @@ gen_inbound_vless() {
         "server_name": "$SNI",
         "reality": {
           "enabled": true,
-          "handshake": { "server": "$SNI", "server_port": 443 },
+          "handshake": { "server": "$_hs_srv", "server_port": $_hs_port },
           "private_key": "$REALITY_PRIV",
           "short_id": [ "$SHORT_ID" ]
         }
@@ -343,6 +413,7 @@ EOF
 }
 
 gen_inbound_hy2() {
+    _crt="$(hy2_crt)"; _key="$(hy2_key)"
     cat <<EOF
     {
       "type": "hysteria2",
@@ -355,8 +426,8 @@ gen_inbound_hy2() {
       "tls": {
         "enabled": true,
         "server_name": "$SNI",
-        "certificate_path": "$CONF_DIR/hy2.crt",
-        "key_path": "$CONF_DIR/hy2.key"
+        "certificate_path": "$_crt",
+        "key_path": "$_key"
       }
     }
 EOF
@@ -440,10 +511,84 @@ get_ip() {
 port_state() {  # $1=端口 $2=tcp|udp  输出带颜色的监听状态
     port_listen "$1" "$2"
     case $? in
-        0) printf "${GRN}监听中${NC}" ;;
+        0) printf "${GRN}监听中${NC}"
+           _o="$(port_owner "$1" 2>/dev/null)"
+           [ -n "$_o" ] && printf " %s" "$(printf "${YLW}(%s)${NC}" "$_o")" ;;
         1) printf "${RED}未监听${NC}" ;;
         *) printf "${YLW}无法判断${NC}" ;;
     esac
+}
+
+# 查端口归属进程(纯 /proc:端口 → inode → /proc/*/fd 反查)
+# ★ 光看"监听中"会误判:nginx 占着 443 时,sb 菜单也会显示"vless 443 监听中",
+#   实际 sing-box 根本没起来。必须把归属进程一起打出来。
+port_owner() {  # $1=端口  输出 "pid:comm",找不到返回 1
+    _hp="$(printf '%04X' "$1" 2>/dev/null)" || return 1
+    _inodes=""
+    for _f in /proc/net/tcp /proc/net/tcp6 /proc/net/udp /proc/net/udp6; do
+        [ -r "$_f" ] || continue
+        _inodes="$_inodes $(awk -v h="$_hp" 'NR>1 { n=split($2,a,":"); if (n==2 && toupper(a[2])==h) print $10 }' "$_f" 2>/dev/null)"
+    done
+    _inodes="$(printf '%s' "$_inodes" | tr ' ' '\n' | grep -v '^$' | sort -u)"
+    [ -n "$_inodes" ] || return 1
+    for _p in /proc/[0-9]*; do
+        [ -d "$_p/fd" ] || continue
+        for _fd in "$_p"/fd/*; do
+            _t="$(readlink "$_fd" 2>/dev/null)" || continue
+            case "$_t" in
+                socket:\[*\]) _i="${_t#socket:[}"; _i="${_i%]}" ;;
+                *) continue ;;
+            esac
+            for _want in $_inodes; do
+                if [ "$_i" = "$_want" ]; then
+                    # ★ 不能用 /proc/PID/comm:Alpine 上 sing-box 是经 ld-musl 启动的,
+                    #   comm 会截成 "ld-musl-x86_64." ,按名字根本认不出是谁
+                    _cmd="$(tr '\0' ' ' < "$_p/cmdline" 2>/dev/null)"
+                    case "$_cmd" in
+                        *sb-onekey*) _cmd="sb-onekey" ;;
+                        *nginx*)     _cmd="nginx" ;;
+                        *realm*)     _cmd="realm" ;;
+                        *)
+                            _cmd="${_cmd%% *}"; _cmd="${_cmd##*/}"
+                            _cmd="$(printf '%.20s' "$_cmd")" ;;
+                    esac
+                    [ -n "$_cmd" ] || _cmd="$(cat "$_p/comm" 2>/dev/null)"
+                    printf '%s:%s' "${_p#/proc/}" "$_cmd"
+                    return 0
+                fi
+            done
+        done
+    done
+    return 1
+}
+
+# 落盘前的硬检查:端口归属 / 域名解析 / 磁盘
+# 2026-10-31 实战:cdt-2 上 nginx 占了 443 还去开 Reality,sing-box 直接
+# `bind: address already in use` 崩溃,而菜单照样显示"443 监听中",排查半小时。
+preflight() {  # 返回 0=可以继续
+    _pf=0
+    if [ "${ENABLE_VLESS:-1}" = "1" ] && [ "${VLESS_PORT:-}" = "443" ]; then
+        _own="$(port_owner 443)"
+        case "$_own" in
+            ''|*:sb-onekey) ;;
+            *) warn "443 已被占用: $_own —— Reality 绑不上"
+               warn "若占用者是 nginx,删掉它配置里所有 listen 443 的 server 段,再 nginx -s reload"
+               _pf=1 ;;
+        esac
+    fi
+    if [ "${TLS_MODE:-steal}" = "own" ] && [ -n "${DOMAIN:-}" ]; then
+        _pip="$(get_ip 2>/dev/null)" || _pip=""
+        _dns="$(nslookup "$DOMAIN" 2>/dev/null | awk '/^Address: /{print $2}' | tail -1)"
+        if [ -n "$_dns" ] && [ -n "$_pip" ] && [ "$_dns" != "$_pip" ]; then
+            warn "$DOMAIN 解析到 $_dns,本机是 $_pip —— A 记录没指对,ACME 会签不下来"
+            _pf=1
+        fi
+    fi
+    _free="$(df -Pk / 2>/dev/null | awk 'NR==2{print int($4/1024)}')"
+    if [ -n "$_free" ] && [ "$_free" -lt 50 ]; then
+        warn "根分区只剩 ${_free}M,装 nginx + acme.sh 可能不够(需要约 15M)"
+    fi
+    return $_pf
 }
 
 # ---------- 系统信息(菜单横幅用) ----------
@@ -551,11 +696,22 @@ show_links() {
         echo ""
     fi
     if [ "${ENABLE_HY2:-1}" = "1" ]; then
-        _fp="$(openssl x509 -in "$CONF_DIR/hy2.crt" -outform der 2>/dev/null | openssl dgst -sha256 -hex | awk '{print $2}' | tr -d ':' | tr 'a-z' 'A-Z')"
-        [ -n "$_fp" ] || die "hy2 证书缺失或损坏,请执行: sb -e 重新生成证书"
+        _crt="$(hy2_crt)"
         _n2="$(urlencode "${NODE_NAME} hy2")"
-        echo "hysteria2://${HY2_PASS}@${_ip}:${HY2_PORT}?sni=${SNI}&insecure=1&pinSHA256=${_fp}#${_n2}"
-        echo ""
+        if [ "${TLS_MODE:-steal}" = "own" ]; then
+            # own 模式:ACME 真证书,客户端正常校验证书链 => 不带 insecure / pinSHA256
+            [ -f "$_crt" ] || die "hy2 证书缺失: $_crt  (执行: sb domain)"
+            _iss="$(openssl x509 -in "$_crt" -noout -issuer 2>/dev/null | sed 's/.*CN *= *//')"
+            _end="$(openssl x509 -in "$_crt" -noout -enddate 2>/dev/null | sed 's/notAfter=//')"
+            echo "hysteria2://${HY2_PASS}@${_ip}:${HY2_PORT}?sni=${SNI}#${_n2}"
+            echo ""
+            info "hy2 证书: ${_iss:-未知签发者} / 到期 ${_end:-未知}"
+        else
+            _fp="$(openssl x509 -in "$_crt" -outform der 2>/dev/null | openssl dgst -sha256 -hex | awk '{print $2}' | tr -d ':' | tr 'a-z' 'A-Z')"
+            [ -n "$_fp" ] || die "hy2 证书缺失或损坏,请执行: sb -e 重新生成证书"
+            echo "hysteria2://${HY2_PASS}@${_ip}:${HY2_PORT}?sni=${SNI}&insecure=1&pinSHA256=${_fp}#${_n2}"
+            echo ""
+        fi
     fi
     printf "${CYN}==============================${NC}\n"
 }
@@ -596,6 +752,459 @@ detect_existing() {
     if [ -x /etc/sing-box/sing-box ] || [ -d /etc/sing-box/conf ]; then
         warn "检测到 fscarmen 版 sing-box,本脚本与其完全隔离(服务名 sb-onekey,目录 /etc/sb-onekey),可共存"
     fi
+}
+
+# =============================================================
+#  伪装模式:偷自己(own) —— 自有域名 + ACME 真证书 + 本机回落站
+#  设计取舍:
+#   · 不碰 /etc/nginx/http.d/default.conf,本脚本只写自己的 sb-onekey.conf,
+#     卸载时删这一个文件即可,不会把别人的站点配置搞坏
+#   · 证书直接放 CERT_DIR,hy2 读同一份 => 不再有"自签副本忘了同步"的问题
+#   · acme.sh 续期钩子只调 `sb reload-cert`,证书路径怎么变都不用改钩子
+# =============================================================
+
+# ---------- 备份 / 回滚 ----------
+backup_now() {  # 成功则输出时间戳,失败返回 1
+    [ -f "$CONF_DIR/config.json" ] || return 1
+    _ts="$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$BACKUP_DIR/$_ts" || return 1
+    cp -f "$CONF_DIR/config.json" "$BACKUP_DIR/$_ts/" 2>/dev/null || true
+    cp -f "$PARAMS" "$BACKUP_DIR/$_ts/" 2>/dev/null || true
+    chmod -R 600 "$BACKUP_DIR/$_ts" 2>/dev/null || true
+    # 只留最近 5 份,低配机器别把磁盘吃光
+    ls -1 "$BACKUP_DIR" 2>/dev/null | sort -r | tail -n +6 | while read -r _d; do
+        rm -rf "$BACKUP_DIR/$_d"
+    done
+    printf '%s' "$_ts"
+}
+
+do_backup() {
+    _t="$(backup_now)" || die "备份失败(还没有 config.json?)"
+    ok "已备份: $BACKUP_DIR/$_t"
+}
+
+do_rollback() {
+    [ -d "$BACKUP_DIR" ] || die "没有备份目录($BACKUP_DIR)"
+    _list="$(ls -1 "$BACKUP_DIR" 2>/dev/null | sort -r)"
+    [ -n "$_list" ] || die "没有可用备份"
+    printf '\n可用备份(新→旧):\n'
+    printf '%s\n' "$_list" | sed 's/^/    /'
+    _newest="$(printf '%s' "$_list" | head -1)"
+    printf '恢复哪一份 [回车=最新 %s]: ' "$_newest"
+    _pick="$(tty_read)" || _pick=""
+    [ -n "$_pick" ] || _pick="$_newest"
+    [ -d "$BACKUP_DIR/$_pick" ] || die "没有这份备份: $_pick"
+    confirm_yn "用 $_pick 覆盖当前配置?" || { warn "已取消"; return 0; }
+    cp -f "$BACKUP_DIR/$_pick/config.json" "$CONF_DIR/config.json" || die "恢复 config.json 失败"
+    [ -f "$BACKUP_DIR/$_pick/params.env" ] && cp -f "$BACKUP_DIR/$_pick/params.env" "$PARAMS"
+    chmod 600 "$CONF_DIR/config.json" "$PARAMS" 2>/dev/null || true
+    rc-service sb-onekey restart >/dev/null 2>&1
+    svc_wait_ready || die "回滚后服务起不来,看日志: tail -30 /var/log/sb-onekey.log"
+    ok "已回滚到 $_pick"
+}
+
+# ---------- nginx ----------
+ngx_ensure() {
+    if ! command -v nginx >/dev/null 2>&1; then
+        info "安装 nginx ..."
+        apk add --no-cache nginx >/dev/null 2>&1 || die "nginx 安装失败(检查 apk 源 / 磁盘)"
+    fi
+    rc-update add nginx default >/dev/null 2>&1 || true
+    mkdir -p "$WEBROOT/.well-known/acme-challenge" "$SITE_ROOT"
+}
+
+# nginx 1.25.1 起才有 `http2 on;`,老版本只认 listen 上的 http2 参数
+_ngx_http2_line() {  # $1=listen 参数(如 "127.0.0.1:8001 ssl")
+    _nv="$(nginx -v 2>&1 | sed -n 's#.*nginx/\([0-9][0-9.]*\).*#\1#p')"
+    _maj="$(printf '%s' "$_nv" | cut -d. -f1)"
+    _min="$(printf '%s' "$_nv" | cut -d. -f2)"
+    if [ -n "$_maj" ] && { [ "$_maj" -gt 1 ] || { [ "$_maj" -eq 1 ] && [ "$_min" -ge 25 ]; }; }; then
+        printf '    listen %s;\n    http2 on;\n' "$1"
+    else
+        printf '    listen %s http2;\n' "$1"
+    fi
+}
+
+# 阶段 1:只有 80(签证书时还没证书文件,带 ssl 的 server 会让 nginx 起不来)
+ngx_write_conf_stage1() {
+    mkdir -p "$NGX_DIR"
+    cat > "$NGX_CONF" <<EOF
+# 由 sb domain 生成(阶段1:仅 ACME 验证)。别手工改,重跑 sb domain 会覆盖。
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN;
+
+    location /.well-known/acme-challenge/ { root $WEBROOT; }
+    location / { return 301 https://\$host\$request_uri; }
+}
+EOF
+}
+
+# 阶段 2:加 127.0.0.1:FALLBACK_PORT 回落站(Reality 握手失败时兜底)
+ngx_write_conf() {
+    mkdir -p "$NGX_DIR"
+    {
+        printf '# 由 sb domain 生成。别手工改,重跑 sb domain 会覆盖。\n'
+        printf '# 注意:这里绝对不能 listen 443 —— 443 归 sing-box(Reality)\n'
+        cat <<EOF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN;
+
+    location /.well-known/acme-challenge/ { root $WEBROOT; }
+    location / { return 301 https://\$host\$request_uri; }
+}
+
+server {
+    listen 127.0.0.1:$FALLBACK_PORT ssl default_server;
+    ssl_reject_handshake on;
+}
+
+server {
+EOF
+        _ngx_http2_line "127.0.0.1:$FALLBACK_PORT ssl"
+        cat <<EOF
+    server_name $DOMAIN;
+
+    ssl_certificate     $CERT_DIR/fullchain.pem;
+    ssl_certificate_key $CERT_DIR/key.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    root $SITE_ROOT;
+    index index.html;
+    location / { try_files \$uri \$uri/ =404; }
+}
+EOF
+    } > "$NGX_CONF"
+}
+
+ngx_apply() {  # 写配置并生效,失败自动删掉自己的配置并报错
+    if ! nginx -t >/dev/null 2>&1; then
+        _err="$(nginx -t 2>&1 | tail -3)"
+        rm -f "$NGX_CONF"
+        die "nginx 配置校验失败,已撤回 $NGX_CONF。原因:
+$_err
+常见: 别的配置文件里已有 listen 443 或占用了 $FALLBACK_PORT"
+    fi
+    if rc-service nginx status >/dev/null 2>&1; then
+        nginx -s reload 2>/dev/null || rc-service nginx restart >/dev/null 2>&1
+    else
+        rc-service nginx start >/dev/null 2>&1 || die "nginx 启动失败"
+    fi
+}
+
+# ---------- ACME ----------
+acme_ensure() {
+    if [ ! -x "$ACME_HOME/acme.sh" ]; then
+        info "安装 acme.sh ..."
+        _mail="${ACME_EMAIL:-admin@$DOMAIN}"
+        curl -fsSL https://get.acme.sh | sh -s email="$_mail" >/dev/null 2>&1 \
+            || die "acme.sh 安装失败。手动装: curl https://get.acme.sh | sh"
+    fi
+    [ -x "$ACME_HOME/acme.sh" ] || die "acme.sh 不可用($ACME_HOME/acme.sh)"
+}
+
+acme_issue() {
+    acme_ensure
+    mkdir -p "$CERT_DIR" "$WEBROOT/.well-known/acme-challenge"
+    # 幂等:已有证书且 30 天内不过期就跳过签发,重跑 sb domain 不会去碰 ACME 频控
+    if [ -f "$CERT_DIR/fullchain.pem" ] && \
+       openssl x509 -in "$CERT_DIR/fullchain.pem" -noout -checkend 2592000 >/dev/null 2>&1; then
+        ok "证书已存在且 30 天内不会过期,跳过签发"
+    else
+        info "申请证书 $DOMAIN (HTTP-01 / webroot) ..."
+        "$ACME_HOME/acme.sh" --issue -d "$DOMAIN" -w "$WEBROOT" --keylength ec-256 \
+            || die "证书签发失败。逐项检查:
+  1) $DOMAIN 的 A 记录是否已指到本机(灰云,别开 CDN 代理)
+  2) 安全组是否放行 80
+  3) nginx 是否在跑: rc-service nginx status
+  4) 验证路径是否可访问: curl -I http://$DOMAIN/.well-known/acme-challenge/test"
+    fi
+    "$ACME_HOME/acme.sh" --install-cert -d "$DOMAIN" --ecc \
+        --key-file "$CERT_DIR/key.pem" \
+        --fullchain-file "$CERT_DIR/fullchain.pem" \
+        --reloadcmd "$SELF_BIN reload-cert" \
+        || die "证书安装失败(acme.sh --install-cert)"
+    chmod 600 "$CERT_DIR/key.pem" 2>/dev/null || true
+    ok "证书已就位: $CERT_DIR"
+}
+
+# 给 acme.sh 当 --reloadcmd 用。只做"让新证书生效",不做签发
+do_reload_cert() {
+    [ -f "$PARAMS" ] || return 0
+    ( . "$PARAMS" 2>/dev/null ) || true
+    nginx -s reload >/dev/null 2>&1 || true
+    rc-service sb-onekey restart >/dev/null 2>&1 || true
+    printf '[sb reload-cert] %s  nginx reload + sb-onekey restart\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+}
+
+# ---------- 内置假站模板 ----------
+# 两套主题以 tar.gz + base64 内嵌,离线可用;源码另存在仓库 themes/ 下,
+# 改了模板用 tools/embed-themes.sh 重新生成下面两个变量。
+site_install() {  # $1=主题 $2=目标目录
+    _theme="${1:-tech}"; _dst="${2:-$SITE_ROOT}"
+    case "$_theme" in
+        tech)   _b64="$THEME_TECH_B64" ;;
+        poetry) _b64="$THEME_POETRY_B64" ;;
+        *) die "未知主题: $_theme (可用: tech / poetry)" ;;
+    esac
+    mkdir -p "$_dst" || die "目录创建失败: $_dst"
+    _tmp="$(mktemp -d)" || die "临时目录创建失败"
+    if ! printf '%s' "$_b64" | base64 -d > "$_tmp/t.tar.gz" 2>/dev/null; then
+        rm -rf "$_tmp"
+        die "主题解码失败(base64 -d 不可用)"
+    fi
+    tar xzf "$_tmp/t.tar.gz" -C "$_dst" || { rm -rf "$_tmp"; die "主题解压失败"; }
+    rm -rf "$_tmp"
+    ok "站点已铺到 $_dst (主题: $_theme)"
+}
+
+do_site() {
+    load_params
+    shift || true
+    _theme=""; _dst=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --theme=*) _theme="${1#*=}" ;;
+            --dir=*)   _dst="${1#*=}" ;;
+            --theme)   shift; _theme="${1:-}" ;;
+            --dir)     shift; _dst="${1:-}" ;;
+            *) die "未知参数: $1  (用法: sb site --theme=poetry [--dir=/var/www/site])" ;;
+        esac
+        shift || true
+    done
+    [ -n "$_theme" ] || _theme="tech"
+    [ -n "$_dst" ] || _dst="$SITE_ROOT"
+    if [ -d "$_dst" ] && [ -n "$(ls -A "$_dst" 2>/dev/null)" ]; then
+        confirm_yn "$_dst 非空,覆盖?" || { warn "已取消"; return 0; }
+        _bak="$_dst.bak-$(date +%Y%m%d%H%M%S)"
+        cp -a "$_dst" "$_bak" 2>/dev/null || true
+        info "旧内容已备份到 $_bak"
+        find "$_dst" -mindepth 1 -delete 2>/dev/null || true
+    fi
+    site_install "$_theme" "$_dst"
+}
+
+# ---------- 一键偷自己 ----------
+do_domain() {
+    check_env
+    [ -f "$PARAMS" ] || die "请先安装节点(sb -i),再用 sb domain 切换成自有域名"
+    load_params
+    shift || true
+
+    case "${1:-}" in
+        --adopt) do_adopt; return ;;
+        '') ;;
+        *) die "未知参数: $1  (用法: sb domain | sb domain --adopt)" ;;
+    esac
+
+    # 非交互也能跑:域名/邮箱可用环境变量给(DOMAIN=... ACME_EMAIL=... SITE_THEME=...)
+    printf '\n当前: 模式=%s  SNI=%s\n' "$TLS_MODE" "$SNI"
+    _d="$(env_val DOMAIN)"
+    if [ -z "$_d" ]; then
+        has_tty || die "非交互环境请用环境变量: DOMAIN=node.example.com sb domain"
+        printf '自有域名(如 node.example.com,必须已把 A 记录指到本机): '
+        _d="$(tty_read)" || _d=""
+    fi
+    [ -n "$_d" ] || die "域名不能为空"
+    check_sni "$_d" || die "域名非法: $_d"
+    DOMAIN="$_d"
+    case "$DOMAIN" in *.*) ;; *) die "域名至少要有一个点: $DOMAIN" ;; esac
+
+    _m="$(env_val ACME_EMAIL)"
+    if [ -z "$_m" ] && has_tty; then
+        printf 'ACME 通知邮箱(可空,回车跳过): '
+        _m="$(tty_read)" || _m=""
+    fi
+    ACME_EMAIL="$_m"
+    CERT_DIR="/etc/nginx/certs/$DOMAIN"
+    [ -n "${FALLBACK_PORT:-}" ] || FALLBACK_PORT=8001
+
+    # DNS 必须先指对,否则 ACME 必然失败(白等两分钟)
+    _pip="$(get_ip 2>/dev/null)" || _pip=""
+    _dns="$(nslookup "$DOMAIN" 2>/dev/null | awk '/^Address: /{print $2}' | tail -1)"
+    if [ -n "$_dns" ] && [ -n "$_pip" ] && [ "$_dns" != "$_pip" ]; then
+        warn "$DOMAIN 解析到 $_dns,本机是 $_pip"
+        confirm_yn "A 记录还没指对,继续会签发失败。仍要继续?" || { warn "已取消,先把 A 记录改到 $_pip"; return 0; }
+    else
+        ok "DNS 指向: ${_dns:-未取到} / 本机 ${_pip:-未取到}"
+    fi
+
+    info "1/5 准备 nginx 与站点目录"
+    ngx_ensure
+    ngx_write_conf_stage1
+    ngx_apply
+    ok "nginx 就绪(80 端口 ACME 验证已开)"
+
+    info "2/5 申请证书"
+    acme_issue
+
+    info "3/5 铺假站"
+    if [ -z "$(ls -A "$SITE_ROOT" 2>/dev/null)" ]; then
+        _theme="$(env_val SITE_THEME)"
+        if [ -z "$_theme" ] && has_tty; then
+            printf '站点主题 1) tech(技术博客) 2) poetry(古诗词) [回车=tech]: '
+            _t="$(tty_read)" || _t=""
+            case "$_t" in 2|poetry) _theme="poetry" ;; *) _theme="tech" ;; esac
+        fi
+        [ -n "$_theme" ] || _theme="tech"
+        site_install "$_theme" "$SITE_ROOT"
+    else
+        ok "$SITE_ROOT 已有内容,跳过铺站(要换主题: sb site --theme=poetry)"
+    fi
+
+    info "4/5 写回落站并生效"
+    ngx_write_conf
+    ngx_apply
+    ok "回落站就绪: 127.0.0.1:$FALLBACK_PORT"
+
+    info "5/5 切换节点到 own 模式"
+    backup_now >/dev/null 2>&1 || true
+    TLS_MODE="own"
+    SNI="$DOMAIN"
+    preflight || { warn "预检有问题(见上),已中止,配置未改"; return 1; }
+    gen_cert
+    write_config
+    save_params
+    svc_install >/dev/null 2>&1 || true
+    rc-service sb-onekey restart >/dev/null 2>&1
+    svc_wait_ready || die "服务起不来,看日志: tail -30 /var/log/sb-onekey.log"
+
+    echo ""
+    ok "已切换为「偷自己」模式"
+    printf '  Reality 回落 -> 127.0.0.1:%s (nginx)\n' "$FALLBACK_PORT"
+    printf '  hy2 证书    -> %s (ACME 真证书,链接不再需要 insecure/pin)\n' "$CERT_DIR"
+    show_links
+}
+
+# 把已经手工配好的机器反填进 params.env,不重建任何东西
+do_adopt() {
+    check_env
+    [ -f "$PARAMS" ] || die "未安装,没什么可收养的"
+    load_params
+    _hit=""
+    [ -n "${DOMAIN:-}" ] || DOMAIN="$SNI"
+    if [ -z "${CERT_DIR:-}" ] && [ -f "/etc/nginx/certs/$DOMAIN/fullchain.pem" ]; then
+        CERT_DIR="/etc/nginx/certs/$DOMAIN"
+    fi
+    if grep '"handshake"' "$CONF_DIR/config.json" 2>/dev/null | grep -q '127\.0\.0\.1'; then
+        TLS_MODE="own"; _hit="handshake 指向 127.0.0.1"
+    fi
+    if [ -f "$NGX_CONF" ] || [ -f "$NGX_DIR/default.conf" ]; then
+        _hit="$_hit${_hit:+, }发现 nginx 回落配置"
+    fi
+    if [ "$TLS_MODE" != "own" ]; then
+        warn "没检测到 own 模式特征(handshake 不指向 127.0.0.1),保持 $TLS_MODE 不变"
+        save_params
+        return 0
+    fi
+    [ -n "$CERT_DIR" ] || die "检测到 own 模式,但找不到证书目录。请手动指定: sb -e 不支持,直接编辑 $PARAMS 的 CERT_DIR"
+    [ -f "$CERT_DIR/fullchain.pem" ] || die "证书不存在: $CERT_DIR/fullchain.pem"
+    save_params
+    ok "已收养(${_hit}): TLS_MODE=own DOMAIN=$DOMAIN CERT_DIR=$CERT_DIR"
+    printf '  建议接着跑: %s\n' "sb doctor"
+}
+
+# ---------- 体检 ----------
+_ck() {  # $1=名称 $2=0/1(1=通过) $3=说明
+    if [ "$2" = "1" ]; then printf "  [${GRN}OK${NC}] %-14s %s\n" "$1" "$3"
+    else printf "  [${RED}!!${NC}] %-14s %s\n" "$1" "$3"; _bad=$((_bad + 1)); fi
+}
+
+do_doctor() {
+    check_env
+    [ -f "$PARAMS" ] || die "未安装(sb -i)"
+    load_params
+    _bad=0
+    _ip="$(get_ip 2>/dev/null)" || _ip=""
+
+    printf "\n${CYN}========== 体检 (%s 模式) ==========${NC}\n" "$TLS_MODE"
+
+    # 1 服务
+    if svc_status; then _ck 服务 1 "运行中"
+    else _ck 服务 0 "未运行 —— rc-service sb-onekey status / tail -30 /var/log/sb-onekey.log"; fi
+
+    # 2 端口监听 + 归属
+    if [ "$ENABLE_VLESS" = "1" ]; then
+        if port_listen "$VLESS_PORT" tcp; then
+            _o="$(port_owner "$VLESS_PORT" 2>/dev/null)"
+            case "$_o" in
+                *sb-onekey*) _ck "vless $VLESS_PORT" 1 "监听中 ($_o)" ;;
+                '')          _ck "vless $VLESS_PORT" 1 "监听中" ;;
+                *)           _ck "vless $VLESS_PORT" 0 "被别的进程占用: $_o" ;;
+            esac
+        else
+            _ck "vless $VLESS_PORT" 0 "TCP 未监听"
+        fi
+    fi
+    if [ "$ENABLE_HY2" = "1" ]; then
+        if port_listen "$HY2_PORT" udp; then _ck "hy2 $HY2_PORT" 1 "UDP 监听中"
+        else _ck "hy2 $HY2_PORT" 0 "UDP 未监听"; fi
+    fi
+
+    # 3 handshake 指向是否与模式一致
+    _hs="$(grep '"handshake"' "$CONF_DIR/config.json" 2>/dev/null | head -1 | sed 's/^[[:space:]]*//')"
+    if [ "$TLS_MODE" = "own" ]; then
+        case "$_hs" in
+            *127.0.0.1*) _ck handshake 1 "$_hs" ;;
+            *)           _ck handshake 0 "应为 127.0.0.1:$FALLBACK_PORT,实际 $_hs (重跑 sb domain)" ;;
+        esac
+    else
+        case "$_hs" in
+            *127.0.0.1*) _ck handshake 0 "steal 模式却指向本机,Reality 会失败" ;;
+            *)           _ck handshake 1 "$_hs" ;;
+        esac
+    fi
+
+    # 4 hy2 证书
+    if [ "$ENABLE_HY2" = "1" ]; then
+        _crt="$(hy2_crt)"
+        if [ -f "$_crt" ]; then
+            _iss="$(openssl x509 -in "$_crt" -noout -issuer 2>/dev/null | sed 's/.*CN *= *//')"
+            _sub="$(openssl x509 -in "$_crt" -noout -subject 2>/dev/null | sed 's/.*CN *= *//')"
+            if [ "$TLS_MODE" = "own" ]; then
+                case "$_iss" in
+                    *Let*|*R3*|*R10*|*R11*|*E1*|*E5*|*E6*|*YE*|*ZeroSSL*|*ISRG*) _ck hy2证书 1 "$_sub / $_iss" ;;
+                    *) _ck hy2证书 0 "不是 ACME 签发(${_iss:-未知}),own 模式下客户端会校验失败" ;;
+                esac
+            else
+                _ck hy2证书 1 "自签 $_sub(链接需带 insecure+pinSHA256)"
+            fi
+            if openssl x509 -in "$_crt" -noout -checkend 1209600 >/dev/null 2>&1; then :; else
+                _ck 证书有效期 0 "14 天内到期,检查 acme.sh cron: crontab -l | grep acme"
+            fi
+        else
+            _ck hy2证书 0 "缺失: $_crt"
+        fi
+    fi
+
+    # 5 域名解析
+    if [ "$TLS_MODE" = "own" ]; then
+        _dns="$(nslookup "$DOMAIN" 2>/dev/null | awk '/^Address: /{print $2}' | tail -1)"
+        if [ -z "$_dns" ]; then _ck "DNS $DOMAIN" 0 "解析不到"
+        elif [ -n "$_ip" ] && [ "$_dns" != "$_ip" ]; then _ck "DNS $DOMAIN" 0 "$_dns ≠ 本机 $_ip"
+        else _ck "DNS $DOMAIN" 1 "$_dns"; fi
+    fi
+
+    # 6/7 回落站:正确 SNI 通、错误 SNI 拒
+    if [ "$TLS_MODE" = "own" ]; then
+        _code="$(curl -s -o /dev/null -w '%{http_code}' -k --max-time 6 \
+            --resolve "$DOMAIN:$FALLBACK_PORT:127.0.0.1" "https://$DOMAIN:$FALLBACK_PORT/" 2>/dev/null)"
+        [ "$_code" = "200" ] && _ck 回落站 1 "本机 $DOMAIN:$FALLBACK_PORT -> 200" \
+                             || _ck 回落站 0 "本机回落站返回 ${_code:-无响应}(nginx 起了吗)"
+        _code2="$(curl -s -o /dev/null -w '%{http_code}' -k --max-time 6 \
+            --resolve "x.invalid:$FALLBACK_PORT:127.0.0.1" "https://x.invalid:$FALLBACK_PORT/" 2>/dev/null)"
+        [ "$_code2" = "000" ] && _ck 错SNI 1 "已拒绝(ssl_reject_handshake 生效)" \
+                              || _ck 错SNI 0 "错误 SNI 也返回 $_code2,回落站会变成开放反代"
+    fi
+
+    printf "${CYN}===================================${NC}\n"
+    if [ "$_bad" = "0" ]; then ok "全部通过"
+    else warn "$_bad 项异常,按上面提示处理"; fi
+    printf '\n'
 }
 
 # ---------- 安装 ----------
@@ -651,7 +1260,8 @@ do_install() {
     [ "$ENABLE_HY2" = "1" ]   && _fw="${_fw:+$_fw + }UDP $HY2_PORT"
     warn "记得在云厂商安全组/防火墙放行: $_fw"
     show_links
-    printf "\n  ${GRN}装好了${NC} —— 以后直接敲 ${CYN}sb${NC} 出菜单,${CYN}sb -h${NC} 看快捷参数\n\n"
+    printf "\n  ${GRN}装好了${NC} —— 以后直接敲 ${CYN}sb${NC} 出菜单,${CYN}sb -h${NC} 看快捷参数\n"
+    printf "  想改用自有域名(偷自己)? ${CYN}sb domain${NC}  (自动签证书 + 装回落站 + 改配置)\n\n"
 }
 
 # ---------- 查看 ----------
@@ -711,8 +1321,11 @@ show_current() {
 }
 
 apply_edit() {  # $1=是否重签证书(1/0)
+    # 先备份再动手:今天(cdt-2)就是 sb -e 把 handshake 改回指向自己导致服务起不来
+    backup_now >/dev/null 2>&1 || true
+    preflight || die "预检未通过(见上),配置未改动。修好后再试"
     if [ "${ENABLE_HY2:-1}" = "1" ]; then
-        if [ "${1:-0}" = "1" ] || [ ! -f "$CONF_DIR/hy2.crt" ] || [ ! -f "$CONF_DIR/hy2.key" ]; then
+        if [ "${1:-0}" = "1" ] || [ ! -f "$(hy2_crt)" ] || [ ! -f "$(hy2_key)" ]; then
             gen_cert
         fi
     fi
@@ -957,6 +1570,13 @@ do_uninstall() {
     rc-update del sb-onekey default >/dev/null 2>&1 || true
     rm -rf "$CONF_DIR" "$BIN" /var/log/sb-onekey.log /etc/init.d/sb-onekey "$SELF_BIN" "$SELF_BIN_ALT"
     ok "已彻底卸载(节点 + sb 命令都已删除,不影响 fscarmen 等第三方安装)"
+    # nginx 回落站配置不自动删:它可能还托着别的域名,误删代价太大
+    if [ -f "$NGX_CONF" ]; then
+        printf "\n  ${YLW}注意${NC}: 回落站配置还在 —— %s\n" "$NGX_CONF"
+        printf '  确认没别的域名在用,可手工清理:\n'
+        printf '    rm %s && nginx -s reload\n' "$NGX_CONF"
+        printf '  站点文件(如还需要): %s\n' "$SITE_ROOT"
+    fi
 }
 
 # ---------- 重启 / 升级 / 协议切换 ----------
@@ -1169,6 +1789,10 @@ do_menu() {
  7 . 删除整个节点(保留 sb 命令)   (sb -r)
  8 . 彻底卸载(连 sb 一起删)       (sb -u)
  9 . 检查脚本更新(升 sb 自身)     (sb -U)
+ 10. 自有域名 / 偷自己             (sb domain)
+ 11. 体检(端口/证书/回落站)       (sb doctor)
+ 12. 备份配置 / 回滚              (sb backup / sb rollback)
+ 13. 铺假站模板(tech/poetry)     (sb site)
  0 . 退出
 
 EOF
@@ -1196,6 +1820,10 @@ EOF
             7) if [ -f "$PARAMS" ]; then do_remove; else warn "未安装"; fi ;;
             8) do_uninstall; return 0 ;;
             9) do_self_update ;;
+            10) do_domain "$@" ;;
+            11) do_doctor ;;
+            12) do_backup; printf '\n回滚请用: sb rollback\n' ;;
+            13) do_site "$@" ;;
             0|q|Q|exit) return 0 ;;
             '') return 0 ;;
             *) warn "无效选择: $_c" ;;
@@ -1224,6 +1852,12 @@ do_help() {
   删除整个节点         sb -r     服务/配置/证书全清(会二次确认),保留 sb 命令
   彻底卸载             sb -u     节点 + sb 命令一起删
   检查脚本更新         sb -U     对比远端版本,有新版可一键升级 sb 自身
+  自有域名(偷自己)     sb domain  签 LE 证书 + 装 nginx 回落站 + 改配置 + 出链接
+                      sb domain --adopt  只把现有手工配置反填进 params.env
+  体检                 sb doctor 服务/端口归属/handshake/证书/解析/回落站 逐项检查
+  备份 / 回滚          sb backup / sb rollback   配置改动前自动备份,留最近 5 份
+  铺假站模板           sb site --theme=poetry|tech [--dir=路径]
+  续期钩子             sb reload-cert  给 acme.sh 当 --reloadcmd,别手工调
   帮助                 sb -h     显示本帮助
 
   长参数也认: --info / --edit / --protocol / --restart / --upgrade / --bbr
@@ -1242,6 +1876,12 @@ do_help() {
   SNI                        伪装域名,默认 www.icloud.com
   NODE_NAME                  节点名,默认主机名
   SB_VERSION                 sing-box 版本,默认取最新 release
+
+两种伪装模式(装完可随时用 sb domain 切换):
+  steal(默认)  偷大厂:SNI 指向别人的站,Reality 回落到 $SNI:443;hy2 自签证书,
+               链接必须带 insecure=1&pinSHA256=...
+  own          偷自己:自有域名 + ACME 真证书 + 本机 nginx 回落站(127.0.0.1:8001),
+               hy2 链接只带 sni。要求:A 记录指到本机(灰云)、80 端口放行
 
 EOF
 }
@@ -1277,6 +1917,12 @@ case "${1:-}" in
     -r|--remove|remove|del|rm|delete)              do_remove ;;
     -u|--uninstall|uninstall|purge)                do_uninstall ;;
     -U|--update|--self-update|update|self-update)  do_self_update ;;
+    -d|--domain|domain)                            do_domain "$@" ;;
+    -t|--doctor|doctor|check)                      do_doctor ;;
+    -k|--backup|backup)                            do_backup ;;
+    --rollback|rollback)                           do_rollback ;;
+    --site|site)                                   do_site "$@" ;;
+    --reload-cert|reload-cert)                     do_reload_cert ;;
     -h|--help|help)                                do_help ;;
     *) die "未知参数: $1  (敲 sb -h 看帮助)" ;;
 esac

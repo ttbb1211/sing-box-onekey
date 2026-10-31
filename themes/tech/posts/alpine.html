@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>把服务器换成 Alpine 之后 · 林深见鹿</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<article>
+  <h2>把服务器换成 Alpine 之后</h2>
+  <p class="meta">2026-08-02</p>
+
+  <p>手里有一台配置很低的云主机，系统盘只有 400M 出头。原来装 Debian，系统本身就吃掉快 1G，随便装点东西就满了。后来重装成 Alpine，整个系统不到 100M，一下子宽松了。</p>
+
+  <p>但 Alpine 和常见的发行版差别不小，用之前得知道几件事。</p>
+
+  <h3>没有 systemd</h3>
+
+  <p>服务管理是 OpenRC，命令换一套：</p>
+
+<pre><code>rc-service nginx start
+rc-service nginx status
+rc-update add nginx default</code></pre>
+
+  <p><code>rc-update add</code> 相当于开机的 enable，不加的话重启就没了。日志也不在 journald 里，一般在 <code>/var/log/messages</code>。</p>
+
+  <h3>busybox 的命令是阉割版</h3>
+
+  <p>默认的 <code>ls</code>、<code>ps</code>、<code>netstat</code> 都是 busybox 提供的，参数比 GNU 版本少很多。比如 <code>ps aux</code> 能跑，但 <code>ps -ef</code> 的某些列就没有。需要完整的工具就装 <code>coreutils</code>、<code>procps</code>、<code>net-tools</code>，但装了就不「小」了，我一般按需装。</p>
+
+  <h3>glibc 和 musl</h3>
+
+  <p>这是最容易翻车的地方。Alpine 用的是 musl libc，官方预编译的二进制大多是针对 glibc 编译的，直接跑会报 <code>not found</code>（不是找不到文件，是找不到解释器）。</p>
+
+  <p>解决办法：要么找 Alpine 自己的包（<code>apk add</code>），要么装 <code>gcompat</code> 兼容层，要么用静态编译的二进制（Go 程序天生静态，这点很省事）。</p>
+
+  <h3>apk 很好用</h3>
+
+  <p><code>apk add --no-cache</code> 不会在本地留缓存，对小盘特别友好。<code>apk info -L</code> 看某个包装了哪些文件，<code>apk del</code> 卸载干净。比 apt 快，也比 apt 干净。</p>
+
+  <p>总的来说，Alpine 适合做单一用途的小机器：跑一个服务、占一点内存、几年不动。真要当开发机用，还是别为难自己。</p>
+</article>
+<a class="back" href="/">← 返回首页</a>
+</body>
+</html>

@@ -1,0 +1,178 @@
+:root {
+  --paper: #f7f3ea;
+  --ink: #35302a;
+  --ink-soft: #6f665a;
+  --rule: #ddd4c4;
+  --seal: #8c3b2e;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Songti SC", "Source Han Serif SC", "Noto Serif CJK SC", "SimSun", Georgia, serif;
+  font-size: 17px;
+  line-height: 1.95;
+  letter-spacing: .02em;
+}
+
+.wrap {
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 72px 28px 96px;
+}
+
+.masthead {
+  text-align: center;
+  padding-bottom: 34px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.masthead h1 {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: .34em;
+  text-indent: .34em;
+}
+
+.masthead .sub {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--ink-soft);
+  letter-spacing: .22em;
+  text-indent: .22em;
+}
+
+.intro {
+  margin: 34px 0 44px;
+  color: var(--ink-soft);
+  font-size: 15.5px;
+  line-height: 2.05;
+}
+
+.year {
+  font-size: 12.5px;
+  color: var(--seal);
+  letter-spacing: .3em;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.entry {
+  padding: 26px 0 24px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.entry h2 {
+  margin: 0 0 6px;
+  font-size: 19px;
+  font-weight: 600;
+  letter-spacing: .04em;
+}
+
+.entry h2 a {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition: border-color .2s;
+}
+
+.entry h2 a:hover { border-bottom-color: var(--seal); }
+
+.date {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  letter-spacing: .16em;
+}
+
+.digest {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 15px;
+  line-height: 1.95;
+}
+
+/* ---------- 单篇 ---------- */
+
+.post-head {
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 26px;
+  margin-bottom: 34px;
+}
+
+.post-head h1 {
+  margin: 0 0 10px;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  line-height: 1.6;
+}
+
+.post-head .date { margin: 0; }
+
+.post p { margin: 0 0 1.35em; }
+
+.poem {
+  margin: 30px 0 32px;
+  padding: 4px 0 4px 22px;
+  border-left: 2px solid var(--seal);
+  color: #2c2721;
+  font-size: 17px;
+  line-height: 2.25;
+}
+
+.poem span { display: block; }
+
+.poem .title {
+  font-size: 14px;
+  color: var(--ink-soft);
+  letter-spacing: .12em;
+  margin-bottom: 10px;
+}
+
+.post p.back { margin: 46px 0 0; }
+
+a.back {
+  display: inline-block;
+  font-size: 14px;
+  color: var(--ink-soft);
+  text-decoration: none;
+  letter-spacing: .1em;
+}
+
+a.back:hover { color: var(--seal); }
+
+footer {
+  margin-top: 64px;
+  padding-top: 28px;
+  border-top: 1px solid var(--rule);
+  text-align: center;
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  letter-spacing: .1em;
+}
+
+footer p { margin: 14px 0 0; }
+
+.seal {
+  display: inline-block;
+  padding: 3px 6px;
+  border: 1px solid var(--seal);
+  color: var(--seal);
+  font-size: 11.5px;
+  letter-spacing: .18em;
+  line-height: 1.4;
+}
+
+@media (max-width: 520px) {
+  body { font-size: 16px; }
+  .wrap { padding: 48px 20px 72px; }
+  .masthead h1 { font-size: 25px; letter-spacing: .24em; text-indent: .24em; }
+  .post-head h1 { font-size: 20px; }
+}

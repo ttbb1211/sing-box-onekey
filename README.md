@@ -20,6 +20,10 @@
 | **隔离共存** | 服务名 `sb-onekey`、目录 `/etc/sb-onekey`、二进制 `/usr/local/bin/sb-onekey`，不碰任何第三方安装 |
 | **自动校验** | 生成配置后跑 `sing-box check`，校验不过直接退出，不会留半残配置 |
 | **凭据不外泄** | `config.json` / `params.env` / `hy2.key` 一律 600、目录 700，本机其它用户读不到私钥和密码 |
+| **两种伪装模式** | `steal`（偷大厂，默认）/ `own`（自有域名 + LE 真证书 + 本机回落站），`sb domain` 一键切换 |
+| **自带体检** | `sb doctor` 八项：服务、端口归属、handshake、证书签发者、DNS、回落站、错 SNI 拒绝 |
+| **改前先备份** | 每次写配置自动备份，`sb rollback` 一条命令回到上一版，留最近 5 份 |
+| **内置假站模板** | `sb site --theme=tech\|poetry`，两套主题离线可用，覆盖前自动备份 |
 
 ---
 
@@ -63,6 +67,10 @@ sb
  7 . 删除整个节点(保留 sb 命令)   (sb -r)
  8 . 彻底卸载(连 sb 一起删)       (sb -u)
  9 . 检查脚本更新(升 sb 自身)     (sb -U)
+ 10. 自有域名 / 偷自己             (sb domain)
+ 11. 体检(端口/证书/回落站)       (sb doctor)
+ 12. 备份配置 / 回滚              (sb backup / sb rollback)
+ 13. 铺假站模板(tech/poetry)     (sb site)
  0 . 退出
 
 请选择:
@@ -92,9 +100,15 @@ sb
 | `sb -r` | 删除整个节点（**会二次确认**），**保留 `sb` 命令**，以后可再 `sb -i` |
 | `sb -u` | 彻底卸载（节点 + `sb` 命令一起删，**会二次确认**） |
 | `sb -U` | **检查脚本自身更新**（对比远端版本，有新版可一键升级，不动节点） |
+| `sb domain` | **一键「偷自己」**：签 LE 证书 + 装 nginx 回落站 + 改配置 + 出链接 |
+| `sb domain --adopt` | 只把现有手工配置反填进 `params.env`，**不重建任何东西** |
+| `sb doctor` | 体检 8 项：服务 / 端口归属 / handshake / 证书 / DNS / 回落站 / 错 SNI |
+| `sb backup` / `sb rollback` | 备份 / 回滚配置（改动前自动备份，留最近 5 份） |
+| `sb site --theme=poetry` | 铺内置假站模板（`tech` 技术博客 / `poetry` 古诗词） |
+| `sb reload-cert` | 给 acme.sh 当 `--reloadcmd`，别手工调 |
 | `sb -h` | 帮助 |
 
-长参数同样可用：`--info` / `--edit` / `--protocol` / `--restart` / `--upgrade` / `--bbr` / `--install` / `--remove` / `--uninstall` / `--update` / `--help`。
+长参数同样可用：`--info` / `--edit` / `--protocol` / `--restart` / `--upgrade` / `--bbr` / `--install` / `--remove` / `--uninstall` / `--update` / `--domain` / `--doctor` / `--backup` / `--rollback` / `--site` / `--reload-cert` / `--help`。
 
 > `/usr/local/bin/sb-onekey` 是 **sing-box 二进制**，不是本脚本；脚本入口是 `/usr/local/bin/sb`（另建 `sbctl` 软链兼容旧名）。两者刻意分开，避免把二进制覆盖掉。
 
@@ -338,6 +352,87 @@ sb -U
 
 ---
 
+## 两种伪装模式：偷大厂 vs 偷自己
+
+v2.0 把「伪装」抽成一个维度，装完随时可切换。
+
+| | `steal`（默认，偷大厂） | `own`（偷自己） |
+|---|---|---|
+| SNI | 别人的站，如 `www.icloud.com` | **自己的域名**，如 `node.example.com` |
+| Reality 回落 | `$SNI:443`（别人的服务器） | `127.0.0.1:8001`（本机 nginx） |
+| hy2 证书 | 自签 | **Let's Encrypt 真证书** |
+| hy2 链接 | 必须带 `insecure=1&pinSHA256=...` | 只带 `sni` |
+| 前置条件 | 无 | 域名 A 记录指到本机（**灰云**）、80 端口放行 |
+
+**为什么值得换**：偷大厂的 SNI 全是被重点关照的对象，且「SNI 指向 A 站、证书却是 B 站」这件事本身就自相矛盾；偷自己后，SNI、DNS、IP、证书四者完全一致，主动探测看到的就是一个正常的小站。
+
+### 一键切换
+
+```sh
+sb domain
+```
+
+依次做五件事：**建 80 站（ACME 验证）→ 签证书 → 铺假站 → 建 `127.0.0.1:8001` 回落站 → 改节点配置并重启**。
+
+非交互用法：
+
+```sh
+DOMAIN=node.example.com sb domain
+DOMAIN=node.example.com SITE_THEME=poetry sb domain   # 顺便铺古诗词主题
+```
+
+### 已经手工配好的机器：`--adopt`
+
+```sh
+sb domain --adopt
+```
+
+只做一件事：探测现有 `config.json` 的 `handshake`、`/etc/nginx/certs/<域名>/`、nginx 配置，把 `TLS_MODE=own` / `DOMAIN` / `CERT_DIR` 反填进 `params.env`。**不重建、不重启、不动证书**。
+
+这一步很关键：不做的话，`params.env` 里没有 `TLS_MODE`，下次 `sb -e` 会按 `steal` 模式重写配置，把 `handshake` 改回 `$SNI:443` —— 服务当场起不来。
+
+### 体检：`sb doctor`
+
+```sh
+sb doctor
+```
+
+```
+========== 体检 (own 模式) ==========
+  [OK] 服务         运行中
+  [OK] vless 443      监听中 (9834:sb-onekey)
+  [OK] hy2 50010      UDP 监听中
+  [OK] handshake      "handshake": { "server": "127.0.0.1", "server_port": 8001 },
+  [OK] hy2证书      node.example.com / E5
+  [OK] DNS node.example.com 203.0.113.10
+  [OK] 回落站      本机 node.example.com:8001 -> 200
+  [OK] 错SNI         已拒绝(ssl_reject_handshake 生效)
+===================================
+[OK] 全部通过
+```
+
+端口那行会带上**归属进程**——这是为了防一个坑：nginx 占着 443 时，光看「监听中」会以为 Reality 活着，实际 sing-box 已经崩了。
+
+### 假站模板：`sb site`
+
+```sh
+sb site --theme=tech      # 技术博客（林深见鹿）
+sb site --theme=poetry    # 古诗词（拾萤集）
+sb site --theme=poetry --dir=/var/www/other
+```
+
+两套模板内嵌在脚本里（tar.gz + base64），**离线可用**。覆盖非空目录前会先备份成 `<目录>.bak-<时间戳>`。
+
+> 多台机器建议用不同主题：两个 IP 挂一模一样的站，比对一下就知道是同一批。
+
+### 三个必须知道的坑
+
+1. **443 只能有一个主人**。`sb domain` 会在 `$NGX_DIR/sb-onekey.conf` 里写 nginx 配置，只监听 `80` 和 `127.0.0.1:8001`，**绝不 listen 443**。如果别的配置里有 `listen 443`，Reality 会 `bind: address already in use` 直接崩，`sb doctor` 会指出占用进程。
+2. **`sb -e` 会重写配置**。v2.0 起 `apply_edit` 先 `backup` 再 `preflight`，失败可 `sb rollback`。但 `params.env` 里 `TLS_MODE` 不对时仍会按错模式写——所以手工改过配置的机器务必先 `sb domain --adopt`。
+3. **证书续期钩子只调 `sb reload-cert`**。它做 `nginx -s reload` + 重启服务，证书路径怎么变都不用改钩子。手动改 `--reloadcmd` 成别的长命令，以后必然对不上。
+
+---
+
 ## 依赖说明
 
 脚本依赖四样，缺了会**自动 `apk add`**：
@@ -494,6 +589,26 @@ A：不能。本脚本是单实例设计（固定目录 + 固定服务名）。�
 ---
 
 ## 更新日志
+
+### v2.0（2026-10-31）— 伪装模式 + 体检 + 备份
+
+**新增「偷自己」模式**（`TLS_MODE=own`），三处原来写死的地方改为按模式分支：
+
+| 位置 | v1.x | v2.0 `own` |
+|---|---|---|
+| Reality `handshake` | 永远 `$SNI:443` | `127.0.0.1:8001`（本机 nginx 回落） |
+| hy2 证书 | 永远自签 `hy2.crt` | `$CERT_DIR/fullchain.pem`（ACME） |
+| hy2 链接 | 永远带 `insecure` + `pinSHA256` | 只带 `sni` |
+
+**新命令**：`sb domain` / `sb domain --adopt` / `sb doctor` / `sb backup` / `sb rollback` / `sb site` / `sb reload-cert`。
+
+**健壮性**：
+
+- `apply_edit` 先备份再落盘，`preflight` 拦截 443 被占用、A 记录指错、磁盘不足
+- 端口状态显示**归属进程**（`/proc` 反查），不再出现「nginx 占着 443 却显示 vless 监听中」
+- `sb -u` 卸载后提示残留的 nginx 回落站配置，不擅自删
+
+**踩过的坑（都写进注释了）**：nginx 占 443 导致 sing-box `bind: address already in use`；`sb -e` 重写 `handshake` 指向自己；`sb -e` 后 hy2 证书退回自签；Alpine 上 sing-box 的 `comm` 被截成 `ld-musl-x86_64.`，按进程名认不出是谁。
 
 ### v1.14（2026-10-22）— 修 `sb -U` 拉不到新版
 
