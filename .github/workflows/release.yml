@@ -1,0 +1,61 @@
+name: release
+
+# 推 tag 或推 main 时，为「有 tag 但没 Release」的版本补建 Release。
+# 用仓库自带的 GITHUB_TOKEN，不需要个人 PAT。
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 为缺 Release 的 tag 补建
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force
+
+          title_for() {
+            case "$1" in
+              v2.1.0) echo "v2.1 — sb -p 菜单重做" ;;
+              v2.0.0) echo "v2.0 — 伪装模式(偷自己) + 体检 + 备份 + 内置假站" ;;
+              *)      echo "$1" ;;
+            esac
+          }
+
+          found=0
+          for tag in $(git tag -l 'v*' --sort=v:refname); do
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "跳过（已有 Release）: $tag"
+              continue
+            fi
+            found=1
+            echo "补建 Release: $tag"
+            notes=".github/release-notes/$tag.md"
+            if [ -f "$notes" ]; then
+              gh release create "$tag" \
+                --title "$(title_for "$tag")" \
+                --notes-file "$notes" \
+                --verify-tag
+            else
+              gh release create "$tag" \
+                --title "$(title_for "$tag")" \
+                --generate-notes \
+                --verify-tag
+            fi
+          done
+
+          if [ "$found" = "0" ]; then
+            echo "所有 tag 都已有 Release，无需处理"
+          fi
