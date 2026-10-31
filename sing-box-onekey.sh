@@ -28,7 +28,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="2.0"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="2.1"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -1339,58 +1339,80 @@ apply_edit() {  # $1=是否重签证书(1/0)
     show_links
 }
 
-toggle_protocols() {
-    # 先把当前状态摆出来,用户才知道"删"是删哪个
-    if [ "$ENABLE_VLESS" = "1" ]; then _vs="${GRN}已启用${NC} (端口 $VLESS_PORT/TCP)"
-    else _vs="${RED}已关闭${NC}"; fi
-    if [ "$ENABLE_HY2" = "1" ]; then _hs="${GRN}已启用${NC} (端口 $HY2_PORT/UDP)"
-    else _hs="${RED}已关闭${NC}"; fi
+# 启用协议时的端口确认:回车沿用原值,输入新值就换
+_pick_port() {  # $1=变量名 $2=显示名
+    eval "_cur=\${$1:-}"
+    printf '%s 端口 [回车沿用 %s]: ' "$2" "${_cur:-无记录}"
+    _p="$(tty_read)" || _p=""
+    [ -n "$_p" ] || _p="$_cur"
+    case "$_p" in ''|*[!0-9]*) warn "端口非法,保持原值"; return 1 ;; esac
+    [ "$_p" -ge 1 ] && [ "$_p" -le 65535 ] || { warn "端口范围 1-65535,保持原值"; return 1; }
+    if [ "$_p" != "$_cur" ] && port_busy "$_p"; then
+        warn "端口 $_p 已被占用,保持原值"; return 1
+    fi
+    eval "$1=\$_p"
+    return 0
+}
 
-    printf '\n当前协议:\n'
+toggle_protocols() {
+    # 一行一个协议,动作跟着当前状态走:启用着的显示「停用」,停用的显示「启用」。
+    # 旧版是「1 删 hy2 / 2 删 vless / 3 两个都启用」——动作方向不一致,只有一个协议在跑时
+    # 另一个选项还是无效动作,老板实测时看不明白,已改。
+    if [ "$ENABLE_VLESS" = "1" ]; then _vs="${GRN}启用中${NC} ($VLESS_PORT/TCP)"
+    else _vs="${RED}已停用${NC}"; fi
+    if [ "$ENABLE_HY2" = "1" ]; then _hs="${GRN}启用中${NC} ($HY2_PORT/UDP)"
+    else _hs="${RED}已停用${NC}"; fi
+    if [ "$ENABLE_VLESS" = "1" ]; then _a1="停用 vless-reality  (释放 $VLESS_PORT/TCP)"
+    else _a1="启用 vless-reality  (端口 ${VLESS_PORT:-未记录}/TCP)"; fi
+    if [ "$ENABLE_HY2" = "1" ]; then _a2="停用 hysteria2      (释放 $HY2_PORT/UDP)"
+    else _a2="启用 hysteria2      (端口 ${HY2_PORT:-未记录}/UDP)"; fi
+
+    printf '\n当前状态:\n'
     printf '  vless-reality : %b\n' "$_vs"
     printf '  hysteria2     : %b\n' "$_hs"
-    printf "\n${CYN}【说明】这里只删「单个协议」${NC}:另一个协议继续工作,凭据(密码/证书)保留,随时能开回来。\n"
-    printf "        要删「整个节点」(服务/配置/证书全清),请退出后用 ${CYN}7 / sb -r${NC}。\n"
+    printf '\n不会重置 UUID / 密码 / 证书,已有链接继续有效。\n'
     printf '\n请选择:\n'
-    printf '  1) 删除 hysteria2      → 只留 vless-reality,释放 UDP 端口\n'
-    printf '  2) 删除 vless-reality  → 只留 hysteria2,释放 TCP 端口\n'
-    printf '  3) 两个都启用          → 缺的自动补上(需要时会问端口)\n'
+    printf '  1) %s\n' "$_a1"
+    printf '  2) %s\n' "$_a2"
     printf '  0) 取消\n'
-    printf "  ${YLW}提示${NC}: 想连节点配置一起删掉,请选 7 / sb -r\n"
-    printf '请选择 [0-3]: '
+    printf '  （要删整个节点:先按 0 退出本菜单,再在主菜单按 7）\n'
+    printf '请选择 [0-2]: '
 
     _v="$(tty_read)" || { warn "取消"; return 0; }
-    _nv="$ENABLE_VLESS"; _nh="$ENABLE_HY2"
     case "$_v" in
-        1) _nv=1; _nh=0 ;;
-        2) _nv=0; _nh=1 ;;
-        3) _nv=1; _nh=1 ;;
+        1) _which=vless ;;
+        2) _which=hy2 ;;
         0|'') warn "已取消"; return 0 ;;
         *) warn "无效选择: $_v,已取消"; return 0 ;;
     esac
-    if [ "$_nv" = "$ENABLE_VLESS" ] && [ "$_nh" = "$ENABLE_HY2" ]; then
-        ok "当前已是该状态,无需修改"; return 0
-    fi
-    ENABLE_VLESS="$_nv"; ENABLE_HY2="$_nh"
-    _del=""
-    [ "$ENABLE_VLESS" = "0" ] && _del="vless-reality"
-    [ "$ENABLE_HY2" = "0" ] && _del="${_del:+$_del + }hysteria2"
 
-    if [ "$ENABLE_VLESS" = "1" ] && [ -z "${VLESS_PORT:-}" ]; then
-        printf 'vless 端口: '
-        VLESS_PORT="$(tty_read)"
-        case "$VLESS_PORT" in ''|*[!0-9]*) warn "端口非法,已取消"; return 0 ;; esac
+    if [ "$_which" = "vless" ]; then
+        if [ "$ENABLE_VLESS" = "1" ]; then
+            ENABLE_VLESS=0
+            _done="已停用 vless-reality,端口 $VLESS_PORT/TCP 已释放"
+        else
+            ENABLE_VLESS=1
+            _pick_port VLESS_PORT vless
+            [ -n "${VLESS_PORT:-}" ] || die "vless 端口为空,无法启用"
+            _done="已启用 vless-reality ($VLESS_PORT/TCP)"
+        fi
+    else
+        if [ "$ENABLE_HY2" = "1" ]; then
+            ENABLE_HY2=0
+            _done="已停用 hysteria2,端口 $HY2_PORT/UDP 已释放"
+        else
+            ENABLE_HY2=1
+            _pick_port HY2_PORT hy2
+            [ -n "${HY2_PORT:-}" ] || die "hy2 端口为空,无法启用"
+            _done="已启用 hysteria2 ($HY2_PORT/UDP)"
+        fi
     fi
-    if [ "$ENABLE_HY2" = "1" ] && [ -z "${HY2_PORT:-}" ]; then
-        printf 'hy2 端口: '
-        HY2_PORT="$(tty_read)"
-        case "$HY2_PORT" in ''|*[!0-9]*) warn "端口非法,已取消"; return 0 ;; esac
-    fi
+
     if [ "$ENABLE_VLESS" = "1" ] && [ "$ENABLE_HY2" = "1" ] && [ "$VLESS_PORT" = "$HY2_PORT" ]; then
-        warn "两个端口不能相同,已取消"; return 0
+        warn "两个端口不能相同,已取消(配置未改动)"; return 0
     fi
     apply_edit 0
-    [ -n "$_del" ] && ok "已删除协议: $_del(对应端口已释放)"
+    ok "$_done"
 }
 
 do_edit() {
@@ -1782,7 +1804,7 @@ do_menu() {
 
  1 . 查看节点信息 / 分享链接       (sb -n)
  2 . 修改节点配置                 (sb -e)
- 3 . 增加 / 删除协议(单个)        (sb -p)
+ 3 . 启用 / 停用协议(单个)        (sb -p)
  4 . 重启服务                     (sb -s)
  5 . 升级 sing-box                (sb -v)
  6 . 开启 BBR 加速                (sb -b)
@@ -1844,7 +1866,7 @@ do_help() {
   ------------------   -------   --------------------------------------------
   查看节点信息         sb -n     协议/端口/监听状态/服务状态/分享链接
   修改节点配置         sb -e     改节点名/SNI/端口/重置凭据/启停协议
-  增加 / 删除协议      sb -p     只删单个协议,另一个继续用,凭据保留
+  启用 / 停用协议      sb -p     只动单个协议,另一个继续用,凭据保留
   重启服务             sb -s     重启 sb-onekey 服务
   升级 sing-box        sb -v     检查并升级到最新 release
   开启 BBR 加速        sb -b     写 sysctl 并持久化(已是 BBR 则跳过)
