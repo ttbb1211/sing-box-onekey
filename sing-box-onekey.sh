@@ -11,24 +11,24 @@
 #    PROTOCOLS=vless,hy2 VLESS_PORT=6501 HY2_PORT=6502 sh ... # 全参数非交互
 #
 #  安装完成后脚本自身会被装成命令 sb,直接敲 sb 出交互菜单:
-#    sb                  # 交互菜单(1看 2改 3协议 4重启 5升级 6删节点 7卸载)
+#    sb                  # 交互菜单(13 项:信息/改配置/协议/重启/升级/BBR/删节点/卸载/… )
 #    sb -n  查看节点信息      sb -e  修改节点配置      sb -p  增减协议
 #    sb -s  重启服务          sb -v  升级 sing-box     sb -b  开启 BBR
 #    sb -r  删除节点(留命令)  sb -u  彻底卸载          sb -h  帮助
 #    sb -e SNI=www.nvidia.com VLESS_PORT=65010    # 非交互编辑
 #
-#  v2.0 新增「伪装模式」: steal(偷大厂,默认) / own(偷自己,自有域名+真证书)
-#    sb domain        一键「偷自己」:签 LE 证书 + 装 nginx 回落站 + 改配置 + 出链接
+#  v2.0 新增「伪装模式」: steal(借用大厂,默认) / own(自建伪装站点,自有域名+真证书)
+#    sb domain        一键「自建伪装站点」:签 LE 证书 + 装 nginx 回落站 + 改配置 + 出链接
 #    sb domain --adopt  只把现有手工配置反填进 params.env,不重建
 #    sb doctor        体检(服务/端口归属/handshake/证书/解析/回落站)
 #    sb backup        备份配置      sb rollback  回滚到上一份备份
-#    sb site          铺假站模板(内置 tech / poetry 两套)
+#    sb site          伪装站点模板(内置 tech / poetry 两套)
 #    sb reload-cert   给 acme.sh 当续期钩子(nginx reload + 同步证书 + 重启)
 # =============================================================
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="2.1"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="2.2"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -57,7 +57,7 @@ NGX_DIR="/etc/nginx/http.d"
 NGX_CONF="$NGX_DIR/sb-onekey.conf"
 ACME_HOME="/root/.acme.sh"
 
-# 内置假站模板(tar.gz + base64)。源码在仓库 themes/ 下,改完跑 tools/embed-themes.sh 重新生成
+# 内置伪装站点模板(tar.gz + base64)。源码在仓库 themes/ 下,改完跑 tools/embed-themes.sh 重新生成
 THEME_TECH_B64='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'
 THEME_POETRY_B64='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'
 
@@ -322,7 +322,7 @@ load_params() {
     # 兼容 v1.2 及更早(无 ENABLE_* 字段):默认两个协议都启用
     : "${ENABLE_VLESS:=1}"
     : "${ENABLE_HY2:=1}"
-    # 兼容 v1.x(无 TLS_MODE 字段):按老行为 = 偷大厂
+    # 兼容 v1.x(无 TLS_MODE 字段):按老行为 = 借用大厂
     : "${TLS_MODE:=steal}"
     : "${DOMAIN:=}"
     : "${ACME_EMAIL:=}"
@@ -755,7 +755,7 @@ detect_existing() {
 }
 
 # =============================================================
-#  伪装模式:偷自己(own) —— 自有域名 + ACME 真证书 + 本机回落站
+#  伪装模式:自建伪装站点(own) —— 自有域名 + ACME 真证书 + 本机回落站
 #  设计取舍:
 #   · 不碰 /etc/nginx/http.d/default.conf,本脚本只写自己的 sb-onekey.conf,
 #     卸载时删这一个文件即可,不会把别人的站点配置搞坏
@@ -941,7 +941,7 @@ do_reload_cert() {
     printf '[sb reload-cert] %s  nginx reload + sb-onekey restart\n' "$(date '+%Y-%m-%d %H:%M:%S')"
 }
 
-# ---------- 内置假站模板 ----------
+# ---------- 内置伪装站点模板 ----------
 # 两套主题以 tar.gz + base64 内嵌,离线可用;源码另存在仓库 themes/ 下,
 # 改了模板用 tools/embed-themes.sh 重新生成下面两个变量。
 site_install() {  # $1=主题 $2=目标目录
@@ -988,7 +988,7 @@ do_site() {
     site_install "$_theme" "$_dst"
 }
 
-# ---------- 一键偷自己 ----------
+# ---------- 一键自建伪装站点 ----------
 do_domain() {
     check_env
     [ -f "$PARAMS" ] || die "请先安装节点(sb -i),再用 sb domain 切换成自有域名"
@@ -1042,7 +1042,7 @@ do_domain() {
     info "2/5 申请证书"
     acme_issue
 
-    info "3/5 铺假站"
+    info "3/5 铺伪装站点"
     if [ -z "$(ls -A "$SITE_ROOT" 2>/dev/null)" ]; then
         _theme="$(env_val SITE_THEME)"
         if [ -z "$_theme" ] && has_tty; then
@@ -1074,7 +1074,7 @@ do_domain() {
     svc_wait_ready || die "服务起不来,看日志: tail -30 /var/log/sb-onekey.log"
 
     echo ""
-    ok "已切换为「偷自己」模式"
+    ok "已切换为「自建伪装站点」模式"
     printf '  Reality 回落 -> 127.0.0.1:%s (nginx)\n' "$FALLBACK_PORT"
     printf '  hy2 证书    -> %s (ACME 真证书,链接不再需要 insecure/pin)\n' "$CERT_DIR"
     show_links
@@ -1261,7 +1261,7 @@ do_install() {
     warn "记得在云厂商安全组/防火墙放行: $_fw"
     show_links
     printf "\n  ${GRN}装好了${NC} —— 以后直接敲 ${CYN}sb${NC} 出菜单,${CYN}sb -h${NC} 看快捷参数\n"
-    printf "  想改用自有域名(偷自己)? ${CYN}sb domain${NC}  (自动签证书 + 装回落站 + 改配置)\n\n"
+    printf "  想改用自建伪装站点? ${CYN}sb domain${NC}  (自动签证书 + 装回落站 + 改配置)\n\n"
 }
 
 # ---------- 查看 ----------
@@ -1802,7 +1802,7 @@ do_menu() {
         if [ -f "$PARAMS" ]; then
             cat <<EOF
 
- 1 . 查看节点信息 / 分享链接       (sb -n)
+ 1 . 查看节点信息 / 分享链接      (sb -n)
  2 . 修改节点配置                 (sb -e)
  3 . 启用 / 停用协议(单个)        (sb -p)
  4 . 重启服务                     (sb -s)
@@ -1811,10 +1811,10 @@ do_menu() {
  7 . 删除整个节点(保留 sb 命令)   (sb -r)
  8 . 彻底卸载(连 sb 一起删)       (sb -u)
  9 . 检查脚本更新(升 sb 自身)     (sb -U)
- 10. 自有域名 / 偷自己             (sb domain)
+ 10. 自建伪装站点                 (sb domain)
  11. 体检(端口/证书/回落站)       (sb doctor)
  12. 备份配置 / 回滚              (sb backup / sb rollback)
- 13. 铺假站模板(tech/poetry)     (sb site)
+ 13. 伪装站点模板(tech/poetry)    (sb site)
  0 . 退出
 
 EOF
@@ -1874,11 +1874,11 @@ do_help() {
   删除整个节点         sb -r     服务/配置/证书全清(会二次确认),保留 sb 命令
   彻底卸载             sb -u     节点 + sb 命令一起删
   检查脚本更新         sb -U     对比远端版本,有新版可一键升级 sb 自身
-  自有域名(偷自己)     sb domain  签 LE 证书 + 装 nginx 回落站 + 改配置 + 出链接
+  自建伪装站点         sb domain  签 LE 证书 + 装 nginx 回落站 + 改配置 + 出链接
                       sb domain --adopt  只把现有手工配置反填进 params.env
   体检                 sb doctor 服务/端口归属/handshake/证书/解析/回落站 逐项检查
   备份 / 回滚          sb backup / sb rollback   配置改动前自动备份,留最近 5 份
-  铺假站模板           sb site --theme=poetry|tech [--dir=路径]
+  伪装站点模板         sb site --theme=poetry|tech [--dir=路径]
   续期钩子             sb reload-cert  给 acme.sh 当 --reloadcmd,别手工调
   帮助                 sb -h     显示本帮助
 
@@ -1900,9 +1900,9 @@ do_help() {
   SB_VERSION                 sing-box 版本,默认取最新 release
 
 两种伪装模式(装完可随时用 sb domain 切换):
-  steal(默认)  偷大厂:SNI 指向别人的站,Reality 回落到 $SNI:443;hy2 自签证书,
+  steal(默认)  借用大厂:SNI 指向别人的站,Reality 回落到 $SNI:443;hy2 自签证书,
                链接必须带 insecure=1&pinSHA256=...
-  own          偷自己:自有域名 + ACME 真证书 + 本机 nginx 回落站(127.0.0.1:8001),
+  own          自建伪装站点:自有域名 + ACME 真证书 + 本机 nginx 回落站(127.0.0.1:8001),
                hy2 链接只带 sni。要求:A 记录指到本机(灰云)、80 端口放行
 
 EOF
