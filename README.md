@@ -122,7 +122,7 @@ sb
   sing-box  : v1.14.3
   服务器 IP : 203.0.113.10
   节点名称  : hk-node-1
-  SNI       : www.icloud.com
+  SNI       : www.broadcom.com
   配置文件  : /etc/sb-onekey/config.json
 
   已装协议  : vless-reality + hysteria2
@@ -216,7 +216,7 @@ PROTOCOLS=both VLESS_PORT=65005 HY2_PORT=65006 NODE_NAME=hk-node-1 sb -i
 ========== 当前配置 ==========
   协议      : vless-reality hysteria2
   节点名称  : hk-node-1
-  SNI       : www.icloud.com
+  SNI       : www.broadcom.com
   vless 端口: 65005
   hy2 端口  : 65006
 ==============================
@@ -374,7 +374,7 @@ v2.0 把「伪装」抽成一个维度，装完随时可切换。
 
 | | `steal`（默认，借用大厂） | `own`（自建伪装站点） |
 |---|---|---|
-| SNI | 别人的站，如 `www.icloud.com` | **自己的域名**，如 `node.example.com` |
+| SNI | 别人的站，如 `www.broadcom.com` | **自己的域名**，如 `node.example.com` |
 | Reality 回落 | `$SNI:443`（别人的服务器） | `127.0.0.1:8001`（本机 nginx） |
 | hy2 证书 | 自签 | **Let's Encrypt 真证书** |
 | hy2 链接 | 必须带 `insecure=1&pinSHA256=...` | 只带 `sni` |
@@ -502,7 +502,7 @@ apk add --no-cache gcompat
 | `PROTOCOLS` | 交互询问 | `vless` / `hy2` / `vless,hy2` / `both` |
 | `VLESS_PORT` | 必填 | vless-reality 监听端口 |
 | `HY2_PORT` | 必填 | hysteria2 监听端口 |
-| `SNI` | `www.icloud.com` | 伪装域名（reality 握手目标 / hy2 证书 CN） |
+| `SNI` | `www.broadcom.com` | 伪装域名（reality 握手目标 / hy2 证书 CN） |
 | `NODE_NAME` | 主机名 | 节点名称 |
 | `SB_VERSION` | 自动查最新 | 指定 sing-box 版本，如 `1.14.3` |
 
