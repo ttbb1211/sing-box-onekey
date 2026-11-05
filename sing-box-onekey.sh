@@ -28,7 +28,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="2.2"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="2.3"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -1233,7 +1233,7 @@ do_install() {
         die "UDP 端口 $HY2_PORT 已被占用(可能是已有节点),换一个"
     fi
 
-    ask_text SNI       "$(printf 'SNI 域名(回车默认 www.icloud.com): ')" "www.icloud.com"
+    ask_text SNI       "$(printf 'SNI 域名(回车默认 www.broadcom.com): ')" "www.broadcom.com"
     check_sni "$SNI" || die "SNI 非法,已中止(换一个域名重试)"
     ask_text NODE_NAME "$(printf '节点名称(回车默认用主机名: '$(hostname)') : ')" "$(hostname)"
     info "预检 SNI: https://$SNI"
@@ -1895,7 +1895,7 @@ do_help() {
 安装时可用的环境变量(非交互):
   PROTOCOLS=vless|hy2|both   选协议,默认交互询问(回车=both)
   VLESS_PORT / HY2_PORT      端口
-  SNI                        伪装域名,默认 www.icloud.com
+  SNI                        伪装域名,默认 www.broadcom.com
   NODE_NAME                  节点名,默认主机名
   SB_VERSION                 sing-box 版本,默认取最新 release
 
