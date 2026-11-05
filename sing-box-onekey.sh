@@ -28,7 +28,7 @@
 set -u
 
 SB_FALLBACK_VERSION="1.14.3"          # GitHub API 不可用时的兜底版本
-SCRIPT_VER="2.3"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
+SCRIPT_VER="2.4"                      # 本脚本自身版本(用于判断 sb 是否需要更新)
 CONF_DIR="/etc/sb-onekey"
 PARAMS="$CONF_DIR/params.env"
 BIN="/usr/local/bin/sb-onekey"        # sing-box 二进制(不是本脚本)
@@ -575,6 +575,14 @@ preflight() {  # 返回 0=可以继续
                warn "若占用者是 nginx,删掉它配置里所有 listen 443 的 server 段,再 nginx -s reload"
                _pf=1 ;;
         esac
+    elif [ "${TLS_MODE:-steal}" = "own" ] && [ "${ENABLE_VLESS:-1}" = "1" ]; then
+        # Reality 不在 443:443 该由 nginx 提供伪装站,被别人占着就只能缺这块
+        _own="$(port_owner 443)"
+        case "$_own" in
+            ''|*:nginx) ;;
+            *) warn "443 被 $_own 占用 —— 伪装站挂不到 443(节点本身不受影响)"
+               warn "腾出 443 后重跑 sb domain 即可补上" ;;
+        esac
     fi
     if [ "${TLS_MODE:-steal}" = "own" ] && [ -n "${DOMAIN:-}" ]; then
         _pip="$(get_ip 2>/dev/null)" || _pip=""
@@ -761,6 +769,8 @@ detect_existing() {
 #     卸载时删这一个文件即可,不会把别人的站点配置搞坏
 #   · 证书直接放 CERT_DIR,hy2 读同一份 => 不再有"自签副本忘了同步"的问题
 #   · acme.sh 续期钩子只调 `sb reload-cert`,证书路径怎么变都不用改钩子
+#   · 443 归属按 VLESS_PORT 动态决定:等于 443 留给 Reality;不等于 443 时由 nginx 接管,
+#     否则 80 的 return 301 指向空端口,浏览器访问域名直接卡在 TLS 握手前(v2.4)
 # =============================================================
 
 # ---------- 备份 / 回滚 ----------
@@ -841,12 +851,50 @@ server {
 EOF
 }
 
+# Reality 不在 443 时,由 nginx 在 443 提供伪装站(与回落站同一份内容)
+# 2026-11-05 实战:singapore 上 VLESS_PORT=65002,443 空转,
+#   而 80 的 return 301 指向 443 => 浏览器打不开域名,来回死循环。
+ngx_site_443() {
+    {
+        printf '\nserver {\n'
+        _ngx_http2_line "443 ssl"
+        cat <<EOF
+    listen [::]:443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate     $CERT_DIR/fullchain.pem;
+    ssl_certificate_key $CERT_DIR/key.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    root $SITE_ROOT;
+    index index.html;
+    location / { try_files \$uri \$uri/ =404; }
+}
+EOF
+    }
+}
+
 # 阶段 2:加 127.0.0.1:FALLBACK_PORT 回落站(Reality 握手失败时兜底)
 ngx_write_conf() {
     mkdir -p "$NGX_DIR"
+    # 443 归谁:Reality 在 443 就留给它;不在 443 就让 nginx 接管,否则 80 的 301 落空
+    _ngx_own443=0
+    if [ "${VLESS_PORT:-}" != "443" ]; then
+        _o443="$(port_owner 443 2>/dev/null)" || _o443=""
+        case "$_o443" in
+            ''|*:nginx) _ngx_own443=1 ;;
+            *) warn "443 被 $_o443 占用,跳过 443 伪装站(节点不受影响)"
+               warn "腾出 443 后重跑 sb domain 即可补上" ;;
+        esac
+    fi
     {
         printf '# 由 sb domain 生成。别手工改,重跑 sb domain 会覆盖。\n'
-        printf '# 注意:这里绝对不能 listen 443 —— 443 归 sing-box(Reality)\n'
+        if [ "$_ngx_own443" = "1" ]; then
+            printf '# Reality 在 %s,443 由 nginx 提供伪装站(与回落站同一份内容)\n' "${VLESS_PORT:-}"
+        else
+            printf '# 注意:这里绝对不能 listen 443 —— 443 归 sing-box(Reality)\n'
+        fi
         cat <<EOF
 server {
     listen 80;
@@ -879,6 +927,8 @@ EOF
 }
 EOF
     } > "$NGX_CONF"
+    [ "$_ngx_own443" = "1" ] && ngx_site_443 >> "$NGX_CONF"
+    return 0
 }
 
 ngx_apply() {  # 写配置并生效,失败自动删掉自己的配置并报错
@@ -890,9 +940,17 @@ $_err
 常见: 别的配置文件里已有 listen 443 或占用了 $FALLBACK_PORT"
     fi
     if rc-service nginx status >/dev/null 2>&1; then
-        nginx -s reload 2>/dev/null || rc-service nginx restart >/dev/null 2>&1
+        nginx -s reload >/dev/null 2>&1 || rc-service nginx restart >/dev/null 2>&1 || true
     else
-        rc-service nginx start >/dev/null 2>&1 || die "nginx 启动失败"
+        rc-service nginx start >/dev/null 2>&1 || true
+    fi
+    # nginx -t 只验语法,不验端口占用。reload 撞端口时会静默失败,这里兜住
+    if ! rc-service nginx status >/dev/null 2>&1; then
+        die "nginx 起不来。常见原因: $FALLBACK_PORT 或 443 被别的进程占用
+查: nginx -t; ss -tlnp | grep -E ':443 |:$FALLBACK_PORT '"
+    fi
+    if [ "${_ngx_own443:-0}" = "1" ] && ! port_listen 443; then
+        warn "nginx 在跑但 443 没监听 —— 443 伪装站未生效,查: ss -tlnp | grep ':443 '"
     fi
 }
 
@@ -1077,6 +1135,9 @@ do_domain() {
     ok "已切换为「自建伪装站点」模式"
     printf '  Reality 回落 -> 127.0.0.1:%s (nginx)\n' "$FALLBACK_PORT"
     printf '  hy2 证书    -> %s (ACME 真证书,链接不再需要 insecure/pin)\n' "$CERT_DIR"
+    if [ "${VLESS_PORT:-}" != "443" ] && port_listen 443; then
+        printf '  伪装站点    -> https://%s (443,nginx;与回落站同一份内容)\n' "$DOMAIN"
+    fi
     show_links
 }
 

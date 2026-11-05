@@ -443,7 +443,9 @@ sb site --theme=poetry --dir=/var/www/other
 
 ### 三个必须知道的坑
 
-1. **443 只能有一个主人**。`sb domain` 会在 `$NGX_DIR/sb-onekey.conf` 里写 nginx 配置，只监听 `80` 和 `127.0.0.1:8001`，**绝不 listen 443**。如果别的配置里有 `listen 443`，Reality 会 `bind: address already in use` 直接崩，`sb doctor` 会指出占用进程。
+1. **443 只能有一个主人**。`sb domain` 写 nginx 配置时按 `VLESS_PORT` 决定 443 归谁：
+   - `VLESS_PORT=443` → nginx 只监听 `80` 和 `127.0.0.1:8001`，**绝不 listen 443**，443 留给 Reality。此时别的配置里若有 `listen 443`，Reality 会 `bind: address already in use` 直接崩，`sb doctor` 会指出占用进程。
+   - `VLESS_PORT≠443`（v2.4 起）→ nginx 接管 443 提供伪装站，浏览器访问域名直接看到站点；443 被别的进程占着则自动跳过，只影响伪装不影响节点。
 2. **`sb -e` 会重写配置**。v2.0 起 `apply_edit` 先 `backup` 再 `preflight`，失败可 `sb rollback`。但 `params.env` 里 `TLS_MODE` 不对时仍会按错模式写——所以手工改过配置的机器务必先 `sb domain --adopt`。
 3. **证书续期钩子只调 `sb reload-cert`**。它做 `nginx -s reload` + 重启服务，证书路径怎么变都不用改钩子。手动改 `--reloadcmd` 成别的长命令，以后必然对不上。
 
