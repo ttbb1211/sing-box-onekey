@@ -32,6 +32,7 @@ jobs:
           # ★ 这张表要跟历史 Release 的实际标题保持一致，否则同步逻辑会把旧标题改成纯 tag 名。
           title_for() {
             case "$1" in
+              v2.3.0) echo "v2.3 — 默认 SNI 改为 www.broadcom.com" ;;
               v2.2.0) echo "v2.2 — 术语统一 + 菜单对齐" ;;
               v2.1.0) echo "v2.1 — sb -p 菜单重做" ;;
               v2.0.0) echo "v2.0 — 伪装模式(自建伪装站点) + 体检 + 备份 + 内置伪装站点" ;;
